@@ -711,7 +711,7 @@ class RTDetrCSPRepLayer(nn.Module):
 
         in_channels = config.encoder_hidden_dim * 2
         out_channels = config.encoder_hidden_dim
-        num_blocks = 3
+        num_blocks = config.encoder_num_blocks
         activation = config.activation_function
 
         hidden_channels = int(out_channels * config.hidden_expansion)
