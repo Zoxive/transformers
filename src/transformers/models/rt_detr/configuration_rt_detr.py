@@ -92,6 +92,8 @@ class RTDetrConfig(PretrainedConfig):
             feed-forward modules.
         hidden_expansion (`float`, *optional*, defaults to 1.0):
             Expansion ratio to enlarge the dimension size of RepVGGBlock and CSPRepLayer.
+        encoder_num_blocks (`int`, *optional*, defaults to 3):
+            Number of bottleneck blocks to be used in the encoder.
         d_model (`int`, *optional*, defaults to 256):
             Dimension of the layers exclude hybrid encoder.
         num_queries (`int`, *optional*, defaults to 300):
@@ -207,6 +209,7 @@ class RTDetrConfig(PretrainedConfig):
         eval_size=None,
         normalize_before=False,
         hidden_expansion=1.0,
+        encoder_num_blocks=3,
         # decoder RTDetrTransformer
         d_model=256,
         num_queries=300,
@@ -297,6 +300,7 @@ class RTDetrConfig(PretrainedConfig):
         self.encoder_activation_function = encoder_activation_function
         self.activation_function = activation_function
         self.hidden_expansion = hidden_expansion
+        self.encoder_num_blocks = encoder_num_blocks
         # decoder
         self.d_model = d_model
         self.num_queries = num_queries
