@@ -15,6 +15,7 @@
 from functools import partial
 import math
 from typing import Optional, Union, Dict, Tuple
+import warnings
 
 from torch import Tensor, nn
 import torch
@@ -37,14 +38,14 @@ from .configuration_rtmdet import RTMDetCSPNeXtConfig
 class RTMDetCSPNeXtPreTrainedModel(PreTrainedModel):
     config_class = RTMDetCSPNeXtConfig
     base_model_prefix = "rtmdet_cspnext"
-    main_input_names = "input" # check this
+    main_input_names = "pixel_values"
 
     def _init_weights(self, module):
         # TODO: init weights
         raise NotImplementedError()
 
 
-def efficient_conv_bn_eval_forward(bn: _BatchNorm,
+def efficient_conv_bn_eval_forward(bn: nn.modules.batchnorm,
                                    conv: nn.modules.conv._ConvNd,
                                    x: torch.Tensor):
     """
@@ -93,6 +94,45 @@ def efficient_conv_bn_eval_forward(bn: _BatchNorm,
 
     return conv._conv_forward(x, weight_on_the_fly, bias_on_the_fly)
 
+def build_norm_layer(norm_cfg: dict, num_features: int):
+    type = norm_cfg['type']
+
+    if type == 'BN':
+        return 'norm', nn.BatchNorm2d(num_features, **norm_cfg)
+
+    if type == 'SyncBN':
+        return 'norm', nn.SyncBatchNorm(num_features, **norm_cfg)
+
+    raise NotImplementedError(f'Norm type {type} is not supported')
+
+def build_activation_layer(act_cfg: dict):
+    act_type = act_cfg.pop('type').lower()
+    act_cls = ACT2FN[act_type]
+    return act_cls(**act_cfg)
+
+def kaiming_init(module,
+                 a=0,
+                 mode='fan_out',
+                 nonlinearity='relu',
+                 bias=0,
+                 distribution='normal'):
+    assert distribution in ['uniform', 'normal']
+    if hasattr(module, 'weight') and module.weight is not None:
+        if distribution == 'uniform':
+            nn.init.kaiming_uniform_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity)
+        else:
+            nn.init.kaiming_normal_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity)
+    if hasattr(module, 'bias') and module.bias is not None:
+        nn.init.constant_(module.bias, bias)
+
+def constant_init(module, val, bias=0):
+    if hasattr(module, 'weight') and module.weight is not None:
+        nn.init.constant_(module.weight, val)
+    if hasattr(module, 'bias') and module.bias is not None:
+        nn.init.constant_(module.bias, bias)
+
 class ConvModule(nn.Module):
     """A conv block that bundles conv/norm/activation layers.
 
@@ -125,8 +165,6 @@ class ConvModule(nn.Module):
         bias (bool | str): If specified as `auto`, it will be decided by the
             norm_cfg. Bias will be set as True if `norm_cfg` is None, otherwise
             False. Default: "auto".
-        conv_cfg (dict): Config dict for convolution layer. Default: None,
-            which means using conv2d.
         norm_cfg (dict): Config dict for normalization layer. Default: None.
         act_cfg (dict): Config dict for activation layer.
             Default: dict(type='ReLU').
@@ -134,11 +172,6 @@ class ConvModule(nn.Module):
             Default: True.
         with_spectral_norm (bool): Whether use spectral norm in conv module.
             Default: False.
-        padding_mode (str): If the `padding_mode` has not been supported by
-            current `Conv2d` in PyTorch, we will use our own padding layer
-            instead. Currently, we support ['zeros', 'circular'] with official
-            implementation and ['reflect'] with our own implementation.
-            Default: 'zeros'.
         order (tuple[str]): The order of conv/norm/activation layers. It is a
             sequence of "conv", "norm" and "act". Common examples are
             ("conv", "norm", "act") and ("act", "conv", "norm").
@@ -156,24 +189,18 @@ class ConvModule(nn.Module):
                  dilation: Union[int, Tuple[int, int]] = 1,
                  groups: int = 1,
                  bias: Union[bool, str] = 'auto',
-                 conv_cfg: Optional[Dict] = None,
                  norm_cfg: Optional[Dict] = None,
                  act_cfg: Optional[Dict] = dict(type='ReLU'),
                  inplace: bool = True,
                  with_spectral_norm: bool = False,
-                 padding_mode: str = 'zeros',
                  order: tuple = ('conv', 'norm', 'act')):
         super().__init__()
-        assert conv_cfg is None or isinstance(conv_cfg, dict)
         assert norm_cfg is None or isinstance(norm_cfg, dict)
         assert act_cfg is None or isinstance(act_cfg, dict)
-        official_padding_mode = ['zeros', 'circular']
-        self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
         self.inplace = inplace
         self.with_spectral_norm = with_spectral_norm
-        self.with_explicit_padding = padding_mode not in official_padding_mode
         self.order = order
         assert isinstance(self.order, tuple) and len(self.order) == 3
         assert set(order) == {'conv', 'norm', 'act'}
@@ -187,15 +214,10 @@ class ConvModule(nn.Module):
             bias = not self.with_norm
         self.with_bias = bias
 
-        if self.with_explicit_padding:
-            pad_cfg = dict(type=padding_mode)
-            self.padding_layer = build_padding_layer(pad_cfg, padding)
-
-        # reset padding to 0 for conv module
-        conv_padding = 0 if self.with_explicit_padding else padding
+        conv_padding = padding
         # build convolution layer
-        self.conv = build_conv_layer(
-            conv_cfg,
+        
+        self.conv = nn.Conv2d(
             in_channels,
             out_channels,
             kernel_size,
@@ -204,6 +226,7 @@ class ConvModule(nn.Module):
             dilation=dilation,
             groups=groups,
             bias=bias)
+
         # export the attributes of self.conv to a higher level for convenience
         self.in_channels = self.conv.in_channels
         self.out_channels = self.conv.out_channels
@@ -229,7 +252,7 @@ class ConvModule(nn.Module):
                 norm_cfg, norm_channels)
             self.add_module(self.norm_name, norm)
             if self.with_bias:
-                if isinstance(norm, (_BatchNorm, _InstanceNorm)):
+                if isinstance(norm, (nn.modules.batchnorm, nn.modules.instancenorm)):
                     warnings.warn(
                         'Unnecessary conv bias before batch/instance norm')
         else:
@@ -308,47 +331,6 @@ class ConvModule(nn.Module):
                 x = self.activate(x)
             layer_index += 1
         return x
-
-    @staticmethod
-    def create_from_conv_bn(conv: nn.modules.conv._ConvNd,
-                            bn: nn.modules.batchnorm._BatchNorm,
-                            efficient_conv_bn_eval=True) -> 'ConvModule':
-        """Create a ConvModule from a conv and a bn module."""
-        self = ConvModule.__new__(ConvModule)
-        super(ConvModule, self).__init__()
-
-        self.conv_cfg = None
-        self.norm_cfg = None
-        self.act_cfg = None
-        self.inplace = False
-        self.with_spectral_norm = False
-        self.with_explicit_padding = False
-        self.order = ('conv', 'norm', 'act')
-
-        self.with_norm = True
-        self.with_activation = False
-        self.with_bias = conv.bias is not None
-
-        # build convolution layer
-        self.conv = conv
-        # export the attributes of self.conv to a higher level for convenience
-        self.in_channels = self.conv.in_channels
-        self.out_channels = self.conv.out_channels
-        self.kernel_size = self.conv.kernel_size
-        self.stride = self.conv.stride
-        self.padding = self.conv.padding
-        self.dilation = self.conv.dilation
-        self.transposed = self.conv.transposed
-        self.output_padding = self.conv.output_padding
-        self.groups = self.conv.groups
-
-        # build normalization layers
-        self.norm_name, norm = 'bn', bn
-        self.add_module(self.norm_name, norm)
-
-        #self.turn_on_efficient_conv_bn_eval(efficient_conv_bn_eval)
-
-        return self
 
 class DepthwiseSeparableConvModule(nn.Module):
     """Depthwise separable convolution module.
@@ -435,8 +417,6 @@ class SPPBottleneck(nn.Module):
         out_channels (int): The output channels of this Module.
         kernel_sizes (tuple[int]): Sequential of kernel sizes of pooling
             layers. Default: (5, 9, 13).
-        conv_cfg (dict): Config dict for convolution layer. Default: None,
-            which means using conv2d.
         norm_cfg (dict): Config dict for normalization layer.
             Default: dict(type='BN').
         act_cfg (dict): Config dict for activation layer.
@@ -449,7 +429,6 @@ class SPPBottleneck(nn.Module):
                  in_channels,
                  out_channels,
                  kernel_sizes=(5, 9, 13),
-                 conv_cfg=None,
                  norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
                  act_cfg=dict(type='Swish')):
         super().__init__()
@@ -459,7 +438,6 @@ class SPPBottleneck(nn.Module):
             mid_channels,
             1,
             stride=1,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
         self.poolings = nn.ModuleList([
@@ -471,7 +449,6 @@ class SPPBottleneck(nn.Module):
             conv2_channels,
             out_channels,
             1,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
 
@@ -496,8 +473,6 @@ class CSPNeXtBlock(nn.Module):
             Defaults to False.
         kernel_size (int): The kernel size of the second convolution layer.
             Defaults to 5.
-        conv_cfg (dict): Config dict for convolution layer. Defaults to None,
-            which means using conv2d.
         norm_cfg (dict): Config dict for normalization layer.
             Defaults to dict(type='BN', momentum=0.03, eps=0.001).
         act_cfg (dict): Config dict for activation layer.
@@ -514,7 +489,6 @@ class CSPNeXtBlock(nn.Module):
                  add_identity: bool = True,
                  use_depthwise: bool = False,
                  kernel_size: int = 5,
-                 conv_cfg = None,
                  norm_cfg = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg = dict(type='SiLU')
@@ -536,7 +510,6 @@ class CSPNeXtBlock(nn.Module):
             kernel_size,
             stride=1,
             padding=kernel_size // 2,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
         self.add_identity = \
@@ -597,8 +570,6 @@ class CSPLayer(nn.Module):
             blocks. Defaults to False.
         channel_attention (bool): Whether to add channel attention in each
             stage. Defaults to True.
-        conv_cfg (dict, optional): Config dict for convolution layer.
-            Defaults to None, which means using conv2d.
         norm_cfg (dict): Config dict for normalization layer.
             Defaults to dict(type='BN')
         act_cfg (dict): Config dict for activation layer.
@@ -615,7 +586,6 @@ class CSPLayer(nn.Module):
                  num_blocks: int = 1,
                  add_identity: bool = True,
                  channel_attention: bool = False,
-                 conv_cfg = None,
                  norm_cfg = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg = dict(type='Swish'),
@@ -628,21 +598,18 @@ class CSPLayer(nn.Module):
             in_channels,
             mid_channels,
             1,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
         self.short_conv = ConvModule(
             in_channels,
             mid_channels,
             1,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
         self.final_conv = ConvModule(
             2 * mid_channels,
             out_channels,
             1,
-            conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
 
@@ -653,7 +620,6 @@ class CSPLayer(nn.Module):
                 1.0,
                 add_identity,
                 use_depthwise=False,
-                conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg) for _ in range(num_blocks)
         ])
@@ -695,7 +661,6 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
 
         norm_cfg = dict(type='BN', momentum=0.03, eps=0.001),
         act_cfg = dict(type='SiLU'),
-        conv_cfg = None
 
         self.stem = nn.Sequential(
             ConvModule(
@@ -736,7 +701,6 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
                 3,
                 stride=2,
                 padding=1,
-                conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg)
             stage.append(conv_layer)
@@ -745,7 +709,6 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
                     out_channels,
                     out_channels,
                     kernel_sizes=config.spp_kernel_sizes,
-                    conv_cfg=conv_cfg,
                     norm_cfg=norm_cfg,
                     act_cfg=act_cfg)
                 stage.append(spp)
@@ -756,7 +719,6 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
                 add_identity=add_identity,
                 expand_ratio=config.expand_ratio,
                 channel_attention=config.channel_attention,
-                conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg)
             stage.append(csp_layer)

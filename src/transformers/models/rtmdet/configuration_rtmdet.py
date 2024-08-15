@@ -29,8 +29,14 @@ class RTMDetConfig(PretrainedConfig):
 
     def __init__(
         self,
+        # backbone
+        backbone_config=None,
         **kwargs,
     ):
+        if backbone_config is None:
+            backbone_config = RTMDetCSPNeXtConfig()
+        
+        self.backbone_config = backbone_config
         super().__init__(**kwargs)
 
 class RTMDetCSPNeXtConfig(BackboneConfigMixin, PretrainedConfig):
