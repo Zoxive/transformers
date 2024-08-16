@@ -206,6 +206,7 @@ from . import (
     roc_bert,
     roformer,
     rt_detr,
+    rtmdet,
     rwkv,
     sam,
     seamless_m4t,

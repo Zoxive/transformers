@@ -1,6 +1,5 @@
 import torch
-from transformers.models.rtmdet.configuration_rtmdet import RTMDetCSPNeXtConfig
-from transformers.models.rtmdet.modeling_rtmdet_cspnext import RTMDetCSPNeXtBackbone
+from transformers import RTMDetCSPNeXtConfig, RTMDetCSPNeXtBackbone
 
 
 checkpoint = 'https://download.openmmlab.com/mmdetection/v3.0/rtmdet/cspnext_rsb_pretrain/cspnext-tiny_imagenet_600e.pth'
