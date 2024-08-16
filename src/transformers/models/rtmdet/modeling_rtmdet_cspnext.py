@@ -604,7 +604,6 @@ class CSPLayer(nn.Module):
                  act_cfg = dict(type='Swish'),
                  ) -> None:
         super().__init__()
-        block = CSPNeXtBlock
         mid_channels = int(out_channels * expand_ratio)
         self.channel_attention = channel_attention
         self.main_conv = ConvModule(
@@ -627,7 +626,7 @@ class CSPLayer(nn.Module):
             act_cfg=act_cfg)
 
         self.blocks = nn.Sequential(*[
-            block(
+            CSPNeXtBlock(
                 mid_channels,
                 mid_channels,
                 1.0,
