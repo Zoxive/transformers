@@ -2,14 +2,17 @@ import torch
 
 from transformers import RTMDetCSPNeXtConfig, RTMDetCSPNeXtBackbone
 
+backbone_cfgs_by_size = {
+    "tiny": RTMDetCSPNeXtConfig(deepen_factor=0.167, widen_factor=0.375),
+    "small": RTMDetCSPNeXtConfig(deepen_factor=0.33, widen_factor=0.5),
+    "medium": RTMDetCSPNeXtConfig(deepen_factor=0.67, widen_factor=0.75),
+}
+model_name_to_checkpoint_url = {
+    "tiny": "https://download.openmmlab.com/mmdetection/v3.0/rtmdet/cspnext_rsb_pretrain/cspnext-tiny_imagenet_600e.pth",
+    "small": "https://download.openmmlab.com/mmdetection/v3.0/rtmdet/cspnext_rsb_pretrain/cspnext-s_imagenet_600e.pth",
+}
 
-def main(model_name: str = "cspnext_tiny_imagenet_600e"):
-
-    model_name_to_checkpoint_url = {
-        # backbone
-        "cspnext_tiny_imagenet_600e": "https://download.openmmlab.com/mmdetection/v3.0/rtmdet/cspnext_rsb_pretrain/cspnext-tiny_imagenet_600e.pth"
-    }
-
+def main(model_name: str = "tiny"):
     state_dict = torch.hub.load_state_dict_from_url(model_name_to_checkpoint_url[model_name], map_location='cpu')
     print(state_dict.keys())
     #['meta', 'state_dict', 'optimizer']
@@ -30,10 +33,14 @@ def main(model_name: str = "cspnext_tiny_imagenet_600e"):
         if k.startswith(prefix):
             renamed_state_dict[k[len(prefix):]] = state_dict_inner[k]
 
-    model = RTMDetCSPNeXtBackbone(RTMDetCSPNeXtConfig())
+    cfg = backbone_cfgs_by_size[model_name]
+    model = RTMDetCSPNeXtBackbone(cfg)
     model.load_state_dict(renamed_state_dict)
     model.eval()
+    print('Loaded model size:', model_name)
+    #model.save_pretrained(f"rtmdet-cspnext-{model_name}")
 
 if __name__ == '__main__':
-    main()
+    main("tiny")
+    main("small")
     

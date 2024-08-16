@@ -65,6 +65,11 @@ class RTMDetCSPNeXtConfig(BackboneConfigMixin, PretrainedConfig):
         self.arch = arch
         self.deepen_factor = deepen_factor
         self.widen_factor = widen_factor
+
+        # TODO can we get the length from the arch_settings instead of a hardcoded value?
+        stages = arch == 'P6' and 5 or 4
+        
+        self.stage_names = ['stem'] + [f'stage{i}' for i in range(1, stages + 1)]
         self.out_indices = out_indices
         self.frozen_stages = frozen_stages
         #self.use_depthwise = use_depthwise

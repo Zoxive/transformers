@@ -20,7 +20,7 @@ import warnings
 from torch import Tensor, nn
 import torch
 
-from ...activations import ACT2FN
+from ...activations import ACT2CLS
 from ...modeling_outputs import (
     BackboneOutput,
     BaseModelOutputWithNoAttention,
@@ -95,19 +95,20 @@ def efficient_conv_bn_eval_forward(bn: nn.modules.batchnorm,
     return conv._conv_forward(x, weight_on_the_fly, bias_on_the_fly)
 
 def build_norm_layer(norm_cfg: dict, num_features: int):
-    type = norm_cfg['type']
+    cfg = norm_cfg.copy()
+    type = cfg.pop('type')
 
     if type == 'BN':
-        return 'norm', nn.BatchNorm2d(num_features, **norm_cfg)
+        return 'bn', nn.BatchNorm2d(num_features, **cfg)
 
     if type == 'SyncBN':
-        return 'norm', nn.SyncBatchNorm(num_features, **norm_cfg)
+        return 'syncbn', nn.SyncBatchNorm(num_features, **cfg)
 
     raise NotImplementedError(f'Norm type {type} is not supported')
 
 def build_activation_layer(act_cfg: dict):
     act_type = act_cfg.pop('type').lower()
-    act_cls = ACT2FN[act_type]
+    act_cls = ACT2CLS[act_type]
     return act_cls(**act_cfg)
 
 def kaiming_init(module,
@@ -639,6 +640,100 @@ class CSPLayer(nn.Module):
             x_final = self.attention(x_final)
         return self.final_conv(x_final)
 
+def _get_bases_name(m):
+    return [b.__name__ for b in m.__class__.__bases__]
+
+def update_init_info(module, init_info):
+    """Update the `_params_init_info` in the module if the value of parameters
+    are changed.
+
+    Args:
+        module (obj:`nn.Module`): The module of PyTorch with a user-defined
+            attribute `_params_init_info` which records the initialization
+            information.
+        init_info (str): The string that describes the initialization.
+    """
+    assert hasattr(
+        module,
+        '_params_init_info'), f'Can not find `_params_init_info` in {module}'
+    for name, param in module.named_parameters():
+
+        assert param in module._params_init_info, (
+            f'Find a new :obj:`Parameter` '
+            f'named `{name}` during executing the '
+            f'`init_weights` of '
+            f'`{module.__class__.__name__}`. '
+            f'Please do not add or '
+            f'replace parameters during executing '
+            f'the `init_weights`. ')
+
+        # The parameter has been changed during executing the
+        # `init_weights` of module
+        mean_value = param.data.mean().cpu()
+        if module._params_init_info[param]['tmp_mean_value'] != mean_value:
+            module._params_init_info[param]['init_info'] = init_info
+            module._params_init_info[param]['tmp_mean_value'] = mean_value
+
+class KaimingInit():
+    r"""Initialize module parameters with the values according to the method
+    described in the paper below.
+
+    `Delving deep into rectifiers: Surpassing human-level
+    performance on ImageNet classification - He, K. et al. (2015).
+    <https://www.cv-foundation.org/openaccess/content_iccv_2015/
+    papers/He_Delving_Deep_into_ICCV_2015_paper.pdf>`_
+
+    Args:
+        a (int | float): the negative slope of the rectifier used after this
+            layer (only used with ``'leaky_relu'``). Defaults to 0.
+        mode (str):  either ``'fan_in'`` or ``'fan_out'``. Choosing
+            ``'fan_in'`` preserves the magnitude of the variance of the weights
+            in the forward pass. Choosing ``'fan_out'`` preserves the
+            magnitudes in the backwards pass. Defaults to ``'fan_out'``.
+        nonlinearity (str): the non-linear function (`nn.functional` name),
+            recommended to use only with ``'relu'`` or ``'leaky_relu'`` .
+            Defaults to 'relu'.
+        bias (int | float): the value to fill the bias. Defaults to 0.
+        bias_prob (float, optional): the probability for bias initialization.
+            Defaults to None.
+        distribution (str): distribution either be ``'normal'`` or
+            ``'uniform'``. Defaults to ``'normal'``.
+        layer (str | list[str], optional): the layer will be initialized.
+            Defaults to None.
+    """
+
+    def __init__(self,
+                 a=0,
+                 mode='fan_out',
+                 nonlinearity='relu',
+                 distribution='normal',
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.a = a
+        self.mode = mode
+        self.nonlinearity = nonlinearity
+        self.distribution = distribution
+        self.layer = ['Conv2d']
+        self.bias = 0
+
+    def __call__(self, module):
+
+        def init(m):
+            layername = m.__class__.__name__
+            basesname = _get_bases_name(m)
+            if len(set(self.layer) & set([layername] + basesname)):
+                kaiming_init(m, self.a, self.mode, self.nonlinearity,
+                                self.bias, self.distribution)
+
+        module.apply(init)
+        if hasattr(module, '_params_init_info'):
+            update_init_info(module, init_info=self._get_init_info())
+
+    def _get_init_info(self):
+        info = f'{self.__class__.__name__}: a={self.a}, mode={self.mode}, ' \
+               f'nonlinearity={self.nonlinearity}, ' \
+               f'distribution ={self.distribution}, bias={self.bias}'
+        return info
 
 class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
     # From left to right:
@@ -653,14 +748,14 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
     
     def __init__(self, config: RTMDetCSPNeXtConfig):
         super().__init__(config)
+        KaimingInit(a = math.sqrt(5), distribution='uniform', mode='fan_in', nonlinearity='leaky_relu')(self)
         super()._init_backbone(config)
         
-        # pull out config settings
         self.config = config
         arch_setting = self.arch_settings[config.arch]
 
-        norm_cfg = dict(type='BN', momentum=0.03, eps=0.001),
-        act_cfg = dict(type='SiLU'),
+        norm_cfg = dict(type='BN', momentum=0.03, eps=0.001)
+        act_cfg = dict(type='SiLU')
 
         self.stem = nn.Sequential(
             ConvModule(
@@ -724,3 +819,73 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
             stage.append(csp_layer)
             self.add_module(f'stage{i + 1}', nn.Sequential(*stage))
             self.layers.append(f'stage{i + 1}')
+
+    def forward(self, x: Tensor) -> BackboneOutput:
+        outputs = {}
+        for layer_name in self.layers:
+            x = getattr(self, layer_name)(x)
+            outputs[layer_name] = x
+        return BackboneOutput(**outputs)
+    
+    # def forward(
+    #     self, pixel_values: Tensor, output_hidden_states: Optional[bool] = None, return_dict: Optional[bool] = None
+    # ) -> BackboneOutput:
+    #     """
+    #     Returns:
+
+    #     Examples:
+
+    #     ```python
+    #     >>> from transformers import RTDetrResNetConfig, RTDetrResNetBackbone
+    #     >>> import torch
+
+    #     >>> config = RTDetrResNetConfig()
+    #     >>> model = RTDetrResNetBackbone(config)
+
+    #     >>> pixel_values = torch.randn(1, 3, 224, 224)
+
+    #     >>> with torch.no_grad():
+    #     ...     outputs = model(pixel_values)
+
+    #     >>> feature_maps = outputs.feature_maps
+    #     >>> list(feature_maps[-1].shape)
+    #     [1, 2048, 7, 7]
+    #     ```"""
+    #     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    #     output_hidden_states = (
+    #         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+    #     )
+
+    #     embedding_output = self.embedder(pixel_values)
+
+    #     outputs = self.encoder(embedding_output, output_hidden_states=True, return_dict=True)
+
+    #     hidden_states = outputs.hidden_states
+
+    #     feature_maps = ()
+    #     for idx, stage in enumerate(self.stage_names):
+    #         if stage in self.out_features:
+    #             feature_maps += (hidden_states[idx],)
+
+    #     if not return_dict:
+    #         output = (feature_maps,)
+    #         if output_hidden_states:
+    #             output += (outputs.hidden_states,)
+    #         return output
+
+    #     return BackboneOutput(
+    #         feature_maps=feature_maps,
+    #         hidden_states=outputs.hidden_states if output_hidden_states else None,
+    #         attentions=None,
+    #     )
+        
+    # def forward2(self, x: torch.Tensor) -> tuple:
+    #     """Forward batch_inputs from the data_preprocessor."""
+    #     outs = []
+    #     for i, layer_name in enumerate(self.layers):
+    #         layer = getattr(self, layer_name)
+    #         x = layer(x)
+    #         if i in self.out_indices:
+    #             outs.append(x)
+
+    #     return tuple(outs)
