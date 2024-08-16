@@ -14,7 +14,7 @@
 # limitations under the License.
 from functools import partial
 import math
-from typing import Optional, Union, Dict, Tuple
+from typing import Optional, Sequence, Union, Dict, Tuple
 import warnings
 
 from torch import Tensor, nn
@@ -410,8 +410,8 @@ class DepthwiseSeparableConvModule(nn.Module):
         x = self.pointwise_conv(x)
         return x
 
-class SPPBottleneck(nn.Module):
-    """Spatial pyramid pooling layer used in YOLOv3-SPP.
+class SPPFBottleneck(nn.Module):
+    """Spatial pyramid pooling layer
 
     Args:
         in_channels (int): The input channels of this Module.
@@ -429,7 +429,7 @@ class SPPBottleneck(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
-                 kernel_sizes=(5, 9, 13),
+                 kernel_sizes: Union[int, Sequence[int]]=(5, 9, 13),
                  norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
                  act_cfg=dict(type='Swish')):
         super().__init__()
@@ -441,13 +441,21 @@ class SPPBottleneck(nn.Module):
             stride=1,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
-        self.poolings = nn.ModuleList([
-            nn.MaxPool2d(kernel_size=ks, stride=1, padding=ks // 2)
-            for ks in kernel_sizes
-        ])
-        conv2_channels = mid_channels * (len(kernel_sizes) + 1)
+
+        self.kernel_sizes = kernel_sizes
+        if isinstance(kernel_sizes, int):
+            self.poolings = nn.MaxPool2d(
+                kernel_size=kernel_sizes, stride=1, padding=kernel_sizes // 2)
+            conv2_in_channels = mid_channels * 4
+        else:
+            self.poolings = nn.ModuleList([
+                nn.MaxPool2d(kernel_size=ks, stride=1, padding=ks // 2)
+                for ks in kernel_sizes
+            ])
+            conv2_in_channels = mid_channels * (len(kernel_sizes) + 1)
+        
         self.conv2 = ConvModule(
-            conv2_channels,
+            conv2_in_channels,
             out_channels,
             1,
             norm_cfg=norm_cfg,
@@ -455,7 +463,11 @@ class SPPBottleneck(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        with torch.cuda.amp.autocast(enabled=False):
+        if isinstance(self.kernel_sizes, int):
+            y1 = self.poolings(x)
+            y2 = self.poolings(y1)
+            x = torch.cat([x, y1, y2, self.poolings(y2)], dim=1)
+        else:
             x = torch.cat(
                 [x] + [pooling(x) for pooling in self.poolings], dim=1)
         x = self.conv2(x)
@@ -800,7 +812,7 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
                 act_cfg=act_cfg)
             stage.append(conv_layer)
             if use_spp:
-                spp = SPPBottleneck(
+                spp = SPPFBottleneck(
                     out_channels,
                     out_channels,
                     kernel_sizes=config.spp_kernel_sizes,

@@ -15,7 +15,7 @@
 """RTMDET configuration"""
 
 import math
-from typing import Sequence
+from typing import Sequence, Union
 
 from ...configuration_utils import PretrainedConfig
 from ...utils import logging
@@ -52,7 +52,8 @@ class RTMDetCSPNeXtConfig(BackboneConfigMixin, PretrainedConfig):
         #use_depthwise: bool = False,
         expand_ratio: float = 0.5,
         arch_ovewrite: dict = None,
-        spp_kernel_sizes: Sequence[int] = (5, 9, 13),
+        #spp_kernel_sizes: Union[int, Sequence[int]] = (5, 9, 13),
+        spp_kernel_sizes: Union[int, Sequence[int]] = 5,
         channel_attention: bool = True,
         #conv_cfg = None,
         #norm_cfg = dict(type='BN', momentum=0.03, eps=0.001),
