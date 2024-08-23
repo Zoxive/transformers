@@ -966,3 +966,53 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
     #             outs.append(x)
 
     #     return tuple(outs)
+
+# For Testing original weights
+class LinearClsHead(nn.Module):
+    def __init__(self, in_features: int, num_classes: int):
+        super().__init__()
+
+        self.in_features = in_features
+        self.num_classes = num_classes
+
+        self.fc = nn.Linear(in_features, num_classes)
+
+    def forward(self, feats: Tuple[torch.Tensor]) -> torch.Tensor:
+        """The forward process."""
+        # The final classification head.
+        pre_logits = feats[-1]
+        
+        cls_score = self.fc(pre_logits)
+        return cls_score
+
+class GlobalAveragePooling(nn.Module):
+    """Global Average Pooling neck.
+
+    Note that we use `view` to remove extra channel after pooling. We do not
+    use `squeeze` as it will also remove the batch dimension when the tensor
+    has a batch dimension of size 1, which can lead to unexpected errors.
+    """
+
+    def __init__(self, kernel_size=None, stride=None):
+        super(GlobalAveragePooling, self).__init__()
+        if kernel_size is None and stride is None:
+            self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        else:
+            self.gap = nn.AvgPool2d(kernel_size, stride)
+
+    def forward(self, inputs):
+        if isinstance(inputs, tuple):
+            outs = tuple([self.gap(x) for x in inputs])
+            outs = tuple([
+                out.view(x.size(0),
+                         torch.tensor(out.size()[1:]).prod())
+                for out, x in zip(outs, inputs)
+            ])
+        elif isinstance(inputs, torch.Tensor):
+            outs = self.gap(inputs)
+            outs = outs.view(
+                inputs.size(0),
+                torch.tensor(outs.size()[1:]).prod())
+        else:
+            raise TypeError('neck inputs should be tuple or torch.tensor')
+        return outs
