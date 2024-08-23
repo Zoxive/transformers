@@ -308,8 +308,6 @@ class ConvModule(nn.Module):
         while layer_index < len(self.order):
             layer = self.order[layer_index]
             if layer == 'conv':
-                if self.with_explicit_padding:
-                    x = self.padding_layer(x)
                 # if the next operation is norm and we have a norm layer in
                 # eval mode and we have enabled `efficient_conv_bn_eval` for
                 # the conv operator, then activate the optimized forward and
@@ -746,29 +744,25 @@ class KaimingInit():
                f'distribution ={self.distribution}, bias={self.bias}'
         return info
 
-class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
-    # From left to right:
-    # in_channels, out_channels, num_blocks, add_identity, use_spp
-    arch_settings = {
+# From left to right:
+# in_channels, out_channels, num_blocks, add_identity, use_spp
+arch_settings = {
         'P5': [[64, 128, 3, True, False], [128, 256, 6, True, False],
                [256, 512, 6, True, False], [512, 1024, 3, False, True]],
         'P6': [[64, 128, 3, True, False], [128, 256, 6, True, False],
                [256, 512, 6, True, False], [512, 768, 3, True, False],
                [768, 1024, 3, False, True]]
     }
-    
+norm_cfg = dict(type='BN', momentum=0.03, eps=0.001)
+act_cfg = dict(type='SiLU')
+
+class RTMDetCSPNeXtEmbeddings(nn.Module):
     def __init__(self, config: RTMDetCSPNeXtConfig):
-        super().__init__(config)
-        KaimingInit(a = math.sqrt(5), distribution='uniform', mode='fan_in', nonlinearity='leaky_relu')(self)
-        super()._init_backbone(config)
+        super().__init__()
+
+        arch_setting = arch_settings[config.arch]
         
-        self.config = config
-        arch_setting = self.arch_settings[config.arch]
-
-        norm_cfg = dict(type='BN', momentum=0.03, eps=0.001)
-        act_cfg = dict(type='SiLU')
-
-        self.stem = nn.Sequential(
+        self.embedder = nn.Sequential(
             ConvModule(
                 3,
                 int(arch_setting[0][0] * config.widen_factor // 2),
@@ -793,50 +787,122 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
                 stride=1,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg))
-        self.layers = ['stem']
 
-        for i, (in_channels, out_channels, num_blocks, add_identity,
-                use_spp) in enumerate(arch_setting):
-            in_channels = int(in_channels * config.widen_factor)
-            out_channels = int(out_channels * config.widen_factor)
-            num_blocks = max(round(num_blocks * config.deepen_factor), 1)
-            stage = []
-            conv_layer = ConvModule(
-                in_channels,
+    def forward(self, x: Tensor) -> Tensor:
+        return self.embedder(x)
+
+class RTMDetCSPNeXtStage(nn.Module):
+    def __init__(self, config: RTMDetCSPNeXtConfig, in_channels: int, out_channels: int, num_blocks: int, add_identity: bool, use_spp: bool):
+        super().__init__()
+        in_channels = int(in_channels * config.widen_factor)
+        out_channels = int(out_channels * config.widen_factor)
+        num_blocks = max(round(num_blocks * config.deepen_factor), 1)
+        conv_layer = ConvModule(
+            in_channels,
+            out_channels,
+            3,
+            stride=2,
+            padding=1,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+
+        self.layers = nn.ModuleList([conv_layer])
+        if use_spp:
+            spp = SPPFBottleneck(
                 out_channels,
-                3,
-                stride=2,
-                padding=1,
+                out_channels,
+                kernel_sizes=config.spp_kernel_sizes,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg)
-            stage.append(conv_layer)
-            if use_spp:
-                spp = SPPFBottleneck(
-                    out_channels,
-                    out_channels,
-                    kernel_sizes=config.spp_kernel_sizes,
-                    norm_cfg=norm_cfg,
-                    act_cfg=act_cfg)
-                stage.append(spp)
-            csp_layer = CSPLayer(
-                out_channels,
-                out_channels,
-                num_blocks=num_blocks,
-                add_identity=add_identity,
-                expand_ratio=config.expand_ratio,
-                channel_attention=config.channel_attention,
-                norm_cfg=norm_cfg,
-                act_cfg=act_cfg)
-            stage.append(csp_layer)
-            self.add_module(f'stage{i + 1}', nn.Sequential(*stage))
-            self.layers.append(f'stage{i + 1}')
+            self.layers.append(spp)
 
-    def forward(self, x: Tensor) -> BackboneOutput:
-        outputs = {}
-        for layer_name in self.layers:
-            x = getattr(self, layer_name)(x)
-            outputs[layer_name] = x
-        return BackboneOutput(**outputs)
+        csp_layer = CSPLayer(
+            out_channels,
+            out_channels,
+            num_blocks=num_blocks,
+            add_identity=add_identity,
+            expand_ratio=config.expand_ratio,
+            channel_attention=config.channel_attention,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.layers.append(csp_layer)
+    
+    def forward(self, input: Tensor) -> Tensor:
+        hidden_state = input
+        for layer in self.layers:
+            hidden_state = layer(hidden_state)
+        return hidden_state
+
+class RTMDetCSPNeXtEncoder(nn.Module):
+    def __init__(self, config: RTMDetCSPNeXtConfig):
+        super().__init__()
+        self.stages = nn.ModuleList([])
+
+        arch_setting = arch_settings[config.arch]
+
+        for i, (in_channels, out_channels, num_blocks, add_identity, use_ssp) in enumerate(arch_setting):
+            stage = RTMDetCSPNeXtStage(config, in_channels, out_channels, num_blocks, add_identity, use_ssp)
+            self.stages.append(stage)
+
+    def forward(self, hidden_state: Tensor, output_hidden_states: bool = False, return_dict: bool = True) -> BaseModelOutputWithNoAttention:
+        hidden_states = () if output_hidden_states else None
+
+        for stage_module in self.stages:
+            if output_hidden_states:
+                hidden_states = hidden_states + (hidden_state,)
+
+            hidden_state = stage_module(hidden_state)
+
+        if output_hidden_states:
+            hidden_states = hidden_states + (hidden_state,)
+
+        if not return_dict:
+            return tuple(v for v in [hidden_state, hidden_states] if v is not None)
+
+        return BaseModelOutputWithNoAttention(
+            last_hidden_state=hidden_state,
+            hidden_states=hidden_states,
+        )
+
+
+class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
+    def __init__(self, config: RTMDetCSPNeXtConfig):
+        super().__init__(config)
+        # TODO?!?
+        #KaimingInit(a = math.sqrt(5), distribution='uniform', mode='fan_in', nonlinearity='leaky_relu')(self)
+        super()._init_backbone(config)
+        
+        self.config = config
+
+        self.embedder = RTMDetCSPNeXtEmbeddings(config)
+        self.encoder = RTMDetCSPNeXtEncoder(config)
+        
+    def forward(self, 
+                pixel_valuesixel_values: Tensor, 
+                output_hidden_states: Optional[bool] = None,
+                return_dict: Optional[bool] = None
+    ) -> BackboneOutput:
+
+        embedding_output = self.embedder(pixel_valuesixel_values)
+        outputs: BaseModelOutputWithNoAttention = self.encoder(embedding_output, output_hidden_states=True, return_dict=True)
+        hidden_states = outputs.hidden_states
+
+        feature_maps = ()
+        for idx, stage in enumerate(self.stage_names):
+            if stage in self.out_features:
+                feature_maps += (hidden_states[idx],)
+
+        if not return_dict:
+            output = (feature_maps,)
+            if output_hidden_states:
+                output += (outputs.hidden_states,)
+            return output
+
+        return BackboneOutput(
+            feature_maps=feature_maps,
+            hidden_states=outputs.hidden_states if output_hidden_states else None,
+            attentions=None,
+        )
     
     # def forward(
     #     self, pixel_values: Tensor, output_hidden_states: Optional[bool] = None, return_dict: Optional[bool] = None
