@@ -1,3 +1,4 @@
+import torch
 from transformers.models.rtmdet.CSPNeXtPAFPN import CSPNeXtPAFPN
 from transformers.models.rtmdet.RTMDetHead import RTMDetHead
 from ...modeling_utils import PreTrainedModel
