@@ -34,23 +34,34 @@ class RTMDetConvEncoder(nn.Module):
 
 # TODO
 size_to_config = {
-    # "tiny": (deepen_factor=0.167, widen_factor=0.375),
-    # "small": (deepen_factor=0.33, widen_factor=0.5),
-    # "medium": (deepen_factor=0.67, widen_factor=0.75),
+     "tiny": dict(deepen_factor=0.167, widen_factor=0.375),
+     "small": dict(deepen_factor=0.33, widen_factor=0.5),
+     "medium": dict(deepen_factor=0.67, widen_factor=0.75),
 }
 
 class RTMDetModel(RTMDetPreTrainedModel):
     def __init__(self, config: RTMDetConfig):
         super().__init__(config)
 
+        # TODO
+        size_cfg = size_to_config["tiny"]
+        deepen_factor = size_cfg["deepen_factor"]
+        widen_factor = size_cfg["widen_factor"]
+
         self.backbone = RTMDetConvEncoder(config)
         # TODO fix params
         self.neck = CSPNeXtPAFPN(
             in_channels=[256, 512, 1024],
             out_channels=256,
-            deepen_factor=0.167,
-            widen_factor=0.375,
+            deepen_factor=deepen_factor,
+            widen_factor=widen_factor,
         )
-        self.head = RTMDetHead()
+        self.head = RTMDetHead(
+            num_classes=config.num_labels, 
+            in_channels=256,
+            feat_channels=256,
+            deepen_factor=deepen_factor,
+            widen_factor=widen_factor,
+        )
 
         self.init_weights()
