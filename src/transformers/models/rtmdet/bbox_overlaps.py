@@ -2,8 +2,6 @@ from typing import List, Union
 import torch
 from torch import Tensor
 
-from .utils import get_box_tensor
-
 def cast_tensor_type(x, scale=1., dtype=None):
     if dtype == 'fp16':
         # scale is for preventing overflows

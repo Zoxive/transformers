@@ -596,12 +596,16 @@ class CSPLayer(nn.Module):
                  expand_ratio: float = 0.5,
                  num_blocks: int = 1,
                  add_identity: bool = True,
+                 use_cspnext_block: bool = False,
                  channel_attention: bool = False,
                  norm_cfg = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg = dict(type='Swish'),
                  ) -> None:
         super().__init__()
+        if not use_cspnext_block:
+            raise NotImplementedError('CSPLayer only supports CSPNeXt block')
+        
         mid_channels = int(out_channels * expand_ratio)
         self.channel_attention = channel_attention
         self.main_conv = ConvModule(
@@ -821,6 +825,7 @@ class RTMDetCSPNeXtStage(nn.Module):
             out_channels,
             num_blocks=num_blocks,
             add_identity=add_identity,
+            use_cspnext_block=True,
             expand_ratio=config.expand_ratio,
             channel_attention=config.channel_attention,
             norm_cfg=norm_cfg,

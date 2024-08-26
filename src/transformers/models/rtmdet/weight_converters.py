@@ -27,3 +27,8 @@ def load_original_backbone_weights(url: str):
             print('Unexpected key:', k)
 
     return renamed_state_dict, head_state_dict
+
+def load_original_weights(url: str):
+    state_dict = torch.hub.load_state_dict_from_url(url, map_location='cpu')
+
+    return state_dict

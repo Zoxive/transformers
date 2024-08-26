@@ -1,8 +1,6 @@
 from abc import ABCMeta, abstractmethod
 import torch
-from mmengine.structures import InstanceData
 
-from mmdet.registry import TASK_UTILS
 #from ..assigners import AssignResult
 #from .sampling_result import SamplingResult
 
@@ -503,8 +501,8 @@ class BaseSampler(metaclass=ABCMeta):
         """Sample negative samples."""
         pass
 
-    def sample(self, assign_result, pred_instances: InstanceData,
-               gt_instances: InstanceData, **kwargs) -> SamplingResult:
+    def sample(self, assign_result, pred_instances,
+               gt_instances, **kwargs) -> SamplingResult:
         """Sample positive and negative bboxes.
 
         This is a simple implementation of bbox sampling given candidates,
@@ -607,8 +605,8 @@ class PseudoSampler(BaseSampler):
         """Sample negative samples."""
         raise NotImplementedError
 
-    def sample(self, assign_result: AssignResult, pred_instances: InstanceData,
-               gt_instances: InstanceData, *args, **kwargs):
+    def sample(self, assign_result: AssignResult, pred_instances,
+               gt_instances, *args, **kwargs):
         """Directly returns the positive and negative indices  of samples.
 
         Args:

@@ -3,9 +3,9 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-#from mmdet.structures.bbox import BaseBoxes
-#from mmdet.utils import ConfigType
 from torch import Tensor
+
+from .bbox_overlaps import BboxOverlaps2D
 
 INF = 100000000
 EPS = 1.0e-7

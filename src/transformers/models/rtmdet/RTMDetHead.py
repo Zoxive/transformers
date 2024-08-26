@@ -124,8 +124,6 @@ class RTMDetSepBNHeadModule(nn.Module):
         share_conv (bool): Whether to share conv layers between stages.
             Defaults to True.
         pred_kernel_size (int): Kernel size of ``nn.Conv2d``. Defaults to 1.
-        conv_cfg (:obj:`ConfigDict` or dict, optional): Config dict for
-            convolution layer. Defaults to None.
         norm_cfg (:obj:`ConfigDict` or dict): Config dict for normalization
             layer. Defaults to ``dict(type='BN')``.
         act_cfg (:obj:`ConfigDict` or dict): Config dict for activation layer.
@@ -141,7 +139,7 @@ class RTMDetSepBNHeadModule(nn.Module):
             featmap_strides: Sequence[int] = [8, 16, 32],
             share_conv: bool = True,
             pred_kernel_size: int = 1,
-            conv_cfg: dict = None,
+            #conv_cfg: dict = None,
             norm_cfg: dict = dict(type='BN'),
             act_cfg: dict = dict(type='SiLU', inplace=True),
     ):
@@ -153,7 +151,7 @@ class RTMDetSepBNHeadModule(nn.Module):
         self.stacked_convs = stacked_convs
         self.num_base_priors = num_base_priors
 
-        self.conv_cfg = conv_cfg
+        #self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
         self.featmap_strides = featmap_strides
@@ -181,7 +179,7 @@ class RTMDetSepBNHeadModule(nn.Module):
                         3,
                         stride=1,
                         padding=1,
-                        conv_cfg=self.conv_cfg,
+                        #conv_cfg=self.conv_cfg,
                         norm_cfg=self.norm_cfg,
                         act_cfg=self.act_cfg))
                 reg_convs.append(
@@ -191,7 +189,7 @@ class RTMDetSepBNHeadModule(nn.Module):
                         3,
                         stride=1,
                         padding=1,
-                        conv_cfg=self.conv_cfg,
+                        #conv_cfg=self.conv_cfg,
                         norm_cfg=self.norm_cfg,
                         act_cfg=self.act_cfg))
             self.cls_convs.append(cls_convs)
@@ -674,6 +672,8 @@ def get_prior_xy_info(index: int, num_base_priors: int,
 class RTMDetHead(nn.Module):
     def __init__(self, 
                  num_classes: int,
+                 in_channels: int,
+                 feat_channels: int = 256,
                  prior_match_thr: float = 4.0,
                  near_neighbor_thr: float = 0.5,
                  ignore_iof_thr: float = -1.0,
@@ -687,8 +687,9 @@ class RTMDetHead(nn.Module):
         self.cls_out_channels = self.num_classes
         self.head_module = RTMDetSepBNHeadModule(
             num_classes=self.num_classes,
-            in_channels=256,
+            in_channels=in_channels,
             featmap_strides=featmap_strides,
+            feat_channels=feat_channels
         )
         self.prior_generator = MlvlPointGenerator(
             strides=featmap_strides,

@@ -13,7 +13,8 @@ class RTMDetPreTrainedModel(PreTrainedModel):
     main_input_name = "pixel_values"
 
     def _init_weights(self, module):
-        raise NotImplementedError()
+        #raise NotImplementedError()
+        pass
 
 class RTMDetConvEncoder(nn.Module):
     def __init__(self, config: RTMDetConfig):
@@ -60,9 +61,8 @@ class RTMDetModel(RTMDetPreTrainedModel):
         self.head = RTMDetHead(
             num_classes=config.num_labels, 
             in_channels=256,
+            #widen_factor=widen_factor,
             feat_channels=256,
-            deepen_factor=deepen_factor,
-            widen_factor=widen_factor,
         )
 
         self.init_weights()

@@ -22,8 +22,6 @@ class CSPNeXtPAFPN(nn.Module):
             hidden layer. Defaults to 0.5.
         upsample_cfg (dict): Config dict for interpolate layer.
             Default: `dict(scale_factor=2, mode='nearest')`
-        conv_cfg (dict, optional): Config dict for convolution layer.
-            Default: None, which means using conv2d.
         norm_cfg (dict): Config dict for normalization layer.
             Default: dict(type='BN')
         act_cfg (dict): Config dict for activation layer.
@@ -42,10 +40,10 @@ class CSPNeXtPAFPN(nn.Module):
         freeze_all: bool = False,
         use_depthwise: bool = False,
         expand_ratio: float = 0.5,
-        #upsample_cfg: ConfigType = dict(scale_factor=2, mode='nearest'),
-        conv_cfg: bool = None,
-        norm_cfg  = dict(type='BN'),
-        act_cfg  = dict(type='SiLU', inplace=True),
+        upsample_cfg: dict = dict(scale_factor=2, mode='nearest'),
+        #conv_cfg: bool = None,
+        norm_cfg: dict = dict(type='BN'),
+        act_cfg: dict = dict(type='SiLU', inplace=True),
         # init_cfg: OptMultiConfig = dict(
         #     type='Kaiming',
         #     layer='Conv2d',
@@ -54,16 +52,17 @@ class CSPNeXtPAFPN(nn.Module):
         #     mode='fan_in',
         #     nonlinearity='leaky_relu')
     ) -> None:
+        super(CSPNeXtPAFPN, self).__init__()
+    
         self.num_csp_blocks = round(num_csp_blocks * deepen_factor)
         self.conv = DepthwiseSeparableConvModule \
             if use_depthwise else ConvModule
         #self.upsample_cfg = upsample_cfg
+        self.upsample_cfg = upsample_cfg
         self.expand_ratio = expand_ratio
-        self.conv_cfg = conv_cfg
-        self.in_channels=[
-            int(channel * widen_factor) for channel in in_channels
-        ],
-        self.out_channels=int(out_channels * widen_factor),
+        #self.conv_cfg = conv_cfg
+        self.in_channels = [int(channel * widen_factor) for channel in in_channels]
+        self.out_channels=int(out_channels * widen_factor)
         self.deepen_factor = deepen_factor
         self.widen_factor = widen_factor
         self.upsample_feats_cat_first = True
@@ -103,10 +102,13 @@ class CSPNeXtPAFPN(nn.Module):
             nn.Module: The reduce layer.
         """
         if idx == len(self.in_channels) - 1:
+            in_channels = self.in_channels[idx]
+            out_channels = self.in_channels[idx - 1]
+            
             layer = self.conv(
-                self.in_channels[idx],
-                self.in_channels[idx - 1],
-                1,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=1,
                 norm_cfg=self.norm_cfg,
                 act_cfg=self.act_cfg)
         else:
@@ -135,7 +137,7 @@ class CSPNeXtPAFPN(nn.Module):
                 add_identity=False,
                 use_cspnext_block=True,
                 expand_ratio=self.expand_ratio,
-                conv_cfg=self.conv_cfg,
+                #conv_cfg=self.conv_cfg,
                 norm_cfg=self.norm_cfg,
                 act_cfg=self.act_cfg)
         else:
@@ -147,7 +149,7 @@ class CSPNeXtPAFPN(nn.Module):
                     add_identity=False,
                     use_cspnext_block=True,
                     expand_ratio=self.expand_ratio,
-                    conv_cfg=self.conv_cfg,
+                    #conv_cfg=self.conv_cfg,
                     norm_cfg=self.norm_cfg,
                     act_cfg=self.act_cfg),
                 self.conv(
@@ -191,7 +193,7 @@ class CSPNeXtPAFPN(nn.Module):
             add_identity=False,
             use_cspnext_block=True,
             expand_ratio=self.expand_ratio,
-            conv_cfg=self.conv_cfg,
+            #conv_cfg=self.conv_cfg,
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
 
