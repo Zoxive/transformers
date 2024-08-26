@@ -1,6 +1,48 @@
-from typing import List, Union
+from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import Tensor
+from torchvision.ops import nms
+
+def scale_boxes(boxes: Union[Tensor],
+                scale_factor: Tuple[float, float]) -> Union[Tensor]:
+    """Scale boxes with type of tensor or box type.
+
+    Args:
+        boxes (Tensor or :obj:`BaseBoxes`): boxes need to be scaled. Its type
+            can be a tensor or a box type.
+        scale_factor (Tuple[float, float]): factors for scaling boxes.
+            The length should be 2.
+
+    Returns:
+        Union[Tensor, :obj:`BaseBoxes`]: Scaled boxes.
+    """
+    # if isinstance(boxes, BaseBoxes):
+    #     boxes.rescale_(scale_factor)
+    #     return boxes
+    # else:
+    # Tensor boxes will be treated as horizontal boxes
+    repeat_num = int(boxes.size(-1) / 2)
+    scale_factor = boxes.new_tensor(scale_factor).repeat((1, repeat_num))
+    return boxes * scale_factor
+
+def get_box_wh(boxes: Union[Tensor]) -> Tuple[Tensor, Tensor]:
+    """Get the width and height of boxes with type of tensor or box type.
+
+    Args:
+        boxes (Tensor or :obj:`BaseBoxes`): boxes with type of tensor
+            or box type.
+
+    Returns:
+        Tuple[Tensor, Tensor]: the width and height of boxes.
+    """
+    # if isinstance(boxes, BaseBoxes):
+    #     w = boxes.widths
+    #     h = boxes.heights
+    # else:
+    # Tensor boxes will be treated as horizontal boxes by defaults
+    w = boxes[:, 2] - boxes[:, 0]
+    h = boxes[:, 3] - boxes[:, 1]
+    return w, h
 
 def cast_tensor_type(x, scale=1., dtype=None):
     if dtype == 'fp16':
@@ -290,3 +332,105 @@ def bbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6):
     enclose_area = torch.max(enclose_area, eps)
     gious = ious - (enclose_area - union) / enclose_area
     return gious
+
+
+def batched_nms(boxes: Tensor,
+                scores: Tensor,
+                idxs: Tensor,
+                iou_threshold: float = 0.65,
+                class_agnostic: bool = False,
+                split_thr: int = 10000,
+                max_num: int = -1
+    ) -> Tuple[Tensor, Tensor]:
+    r"""Performs non-maximum suppression in a batched fashion.
+
+    Modified from `torchvision/ops/boxes.py#L39
+    <https://github.com/pytorch/vision/blob/
+    505cd6957711af790211896d32b40291bea1bc21/torchvision/ops/boxes.py#L39>`_.
+    In order to perform NMS independently per class, we add an offset to all
+    the boxes. The offset is dependent only on the class idx, and is large
+    enough so that boxes from different classes do not overlap.
+
+    Note:
+        In v1.4.1 and later, ``batched_nms`` supports skipping the NMS and
+        returns sorted raw results when `nms_cfg` is None.
+
+    Args:
+        boxes (torch.Tensor): boxes in shape (N, 4) or (N, 5).
+        scores (torch.Tensor): scores in shape (N, ).
+        idxs (torch.Tensor): each index value correspond to a bbox cluster,
+            and NMS will not be applied between elements of different idxs,
+            shape (N, ).
+
+    Returns:
+        tuple: kept dets and indice.
+
+        - boxes (Tensor): Bboxes with score after nms, has shape
+          (num_bboxes, 5). last dimension 5 arrange as
+          (x1, y1, x2, y2, score)
+        - keep (Tensor): The indices of remaining boxes in input
+          boxes.
+    """
+    # skip nms when nms_cfg is None
+    # if nms_cfg is None:
+    #     scores, inds = scores.sort(descending=True)
+    #     boxes = boxes[inds]
+    #     return torch.cat([boxes, scores[:, None]], -1), inds
+
+    if class_agnostic:
+        boxes_for_nms = boxes
+    else:
+        # When using rotated boxes, only apply offsets on center.
+        if boxes.size(-1) == 5:
+            # Strictly, the maximum coordinates of the rotating box
+            # (x,y,w,h,a) should be calculated by polygon coordinates.
+            # But the conversion from rotated box to polygon will
+            # slow down the speed.
+            # So we use max(x,y) + max(w,h) as max coordinate
+            # which is larger than polygon max coordinate
+            # max(x1, y1, x2, y2,x3, y3, x4, y4)
+            max_coordinate = boxes[..., :2].max() + boxes[..., 2:4].max()
+            offsets = idxs.to(boxes) * (
+                max_coordinate + torch.tensor(1).to(boxes))
+            boxes_ctr_for_nms = boxes[..., :2] + offsets[:, None]
+            boxes_for_nms = torch.cat([boxes_ctr_for_nms, boxes[..., 2:5]],
+                                      dim=-1)
+        else:
+            max_coordinate = boxes.max()
+            offsets = idxs.to(boxes) * (
+                max_coordinate + torch.tensor(1).to(boxes))
+            boxes_for_nms = boxes + offsets[:, None]
+
+    # Won't split to multiple nms nodes when exporting to onnx
+    if boxes_for_nms.shape[0] < split_thr:
+        dets, keep = nms(boxes_for_nms, scores, iou_threshold)
+        boxes = boxes[keep]
+
+        # This assumes `dets` has arbitrary dimensions where
+        # the last dimension is score.
+        # Currently it supports bounding boxes [x1, y1, x2, y2, score] or
+        # rotated boxes [cx, cy, w, h, angle_radian, score].
+
+        scores = dets[:, -1]
+    else:
+        total_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
+        # Some type of nms would reweight the score, such as SoftNMS
+        scores_after_nms = scores.new_zeros(scores.size())
+        for id in torch.unique(idxs):
+            mask = (idxs == id).nonzero(as_tuple=False).view(-1)
+            dets, keep = nms(boxes_for_nms[mask], scores[mask], iou_threshold)
+            total_mask[mask[keep]] = True
+            scores_after_nms[mask[keep]] = dets[:, -1]
+        keep = total_mask.nonzero(as_tuple=False).view(-1)
+
+        scores, inds = scores_after_nms[keep].sort(descending=True)
+        keep = keep[inds]
+        boxes = boxes[keep]
+
+        if max_num > 0:
+            keep = keep[:max_num]
+            boxes = boxes[:max_num]
+            scores = scores[:max_num]
+
+    boxes = torch.cat([boxes, scores[:, None]], -1)
+    return boxes, keep

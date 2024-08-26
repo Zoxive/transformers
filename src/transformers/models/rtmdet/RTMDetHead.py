@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 import numpy as np
 from torch import Tensor
 import torch
@@ -7,8 +7,8 @@ import torch.nn as nn
 
 from .sampler import PseudoSampler
 from .batch_dsl_assigner import BatchDynamicSoftLabelAssigner
-from .bbox_overlaps import bbox_overlaps
-from .utils import get_dist_info, gt_instances_preprocess, reduce_mean
+from .bbox_overlaps import batched_nms, bbox_overlaps, get_box_tensor, get_box_wh, scale_boxes
+from .utils import filter_scores_and_topk, get_dist_info, gt_instances_preprocess, reduce_mean
 from .giou_loss import GIoULoss
 from .focal_loss import QualityFocalLoss
 from .modeling_rtmdet_cspnext import ConvModule
@@ -673,6 +673,7 @@ class RTMDetHead(nn.Module):
     def __init__(self, 
                  num_classes: int,
                  in_channels: int,
+                 widen_factor: float = 1.0,
                  feat_channels: int = 256,
                  prior_match_thr: float = 4.0,
                  near_neighbor_thr: float = 0.5,
@@ -689,13 +690,14 @@ class RTMDetHead(nn.Module):
             num_classes=self.num_classes,
             in_channels=in_channels,
             featmap_strides=featmap_strides,
-            feat_channels=feat_channels
+            feat_channels=feat_channels,
+            widen_factor=widen_factor
         )
         self.prior_generator = MlvlPointGenerator(
             strides=featmap_strides,
             offset=0
         )
-        self.box_coder = DistancePointBBoxCoder()
+        self.bbox_coder = DistancePointBBoxCoder()
         self.loss_cls = QualityFocalLoss(use_sigmoid=True, beta=2.0, loss_weight=1.0)
         self.loss_bbox = GIoULoss(loss_weight=2.0)
         
@@ -1125,3 +1127,233 @@ class RTMDetHead(nn.Module):
             loss_cls=loss_cls * batch_size * world_size,
             loss_obj=loss_obj * batch_size * world_size,
             loss_bbox=loss_box * batch_size * world_size)
+
+    def predict_by_feat(self,
+                        cls_scores: List[Tensor],
+                        bbox_preds: List[Tensor],
+                        objectnesses: Optional[List[Tensor]] = None,
+                        batch_img_metas: Optional[List[dict]] = None,
+                        rescale: bool = True,
+                        with_nms: bool = True) -> List:
+        """Transform a batch of output features extracted by the head into
+        bbox results.
+        Args:
+            cls_scores (list[Tensor]): Classification scores for all
+                scale levels, each is a 4D-tensor, has shape
+                (batch_size, num_priors * num_classes, H, W).
+            bbox_preds (list[Tensor]): Box energies / deltas for all
+                scale levels, each is a 4D-tensor, has shape
+                (batch_size, num_priors * 4, H, W).
+            objectnesses (list[Tensor], Optional): Score factor for
+                all scale level, each is a 4D-tensor, has shape
+                (batch_size, 1, H, W).
+            batch_img_metas (list[dict], Optional): Batch image meta info.
+                Defaults to None.
+            cfg (ConfigDict, optional): Test / postprocessing
+                configuration, if None, test_cfg would be used.
+                Defaults to None.
+            rescale (bool): If True, return boxes in original image space.
+                Defaults to False.
+            with_nms (bool): If True, do nms before return boxes.
+                Defaults to True.
+
+        Returns:
+            list[:obj:`InstanceData`]: Object detection results of each image
+            after the post process. Each item usually contains following keys.
+
+            - scores (Tensor): Classification scores, has a shape
+              (num_instance, )
+            - labels (Tensor): Labels of bboxes, has a shape
+              (num_instances, ).
+            - bboxes (Tensor): Has a shape (num_instances, 4),
+              the last dimension 4 arrange as (x1, y1, x2, y2).
+        """
+        assert len(cls_scores) == len(bbox_preds)
+        if objectnesses is None:
+            with_objectnesses = False
+        else:
+            with_objectnesses = True
+            assert len(cls_scores) == len(objectnesses)
+
+        # multi_label = cfg.multi_label
+        # multi_label &= self.num_classes > 1
+        # cfg.multi_label = multi_label
+
+        num_imgs = len(batch_img_metas)
+        featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
+
+        # If the shape does not change, use the previous mlvl_priors
+        if featmap_sizes != self.featmap_sizes:
+            self.mlvl_priors = self.prior_generator.grid_priors(
+                featmap_sizes,
+                dtype=cls_scores[0].dtype,
+                device=cls_scores[0].device)
+            self.featmap_sizes = featmap_sizes
+        flatten_priors = torch.cat(self.mlvl_priors)
+
+        mlvl_strides = [
+            flatten_priors.new_full(
+                (featmap_size.numel() * self.num_base_priors, ), stride) for
+            featmap_size, stride in zip(featmap_sizes, self.featmap_strides)
+        ]
+        flatten_stride = torch.cat(mlvl_strides)
+
+        # flatten cls_scores, bbox_preds and objectness
+        flatten_cls_scores = [
+            cls_score.permute(0, 2, 3, 1).reshape(num_imgs, -1,
+                                                  self.num_classes)
+            for cls_score in cls_scores
+        ]
+        flatten_bbox_preds = [
+            bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+            for bbox_pred in bbox_preds
+        ]
+
+        flatten_cls_scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
+        flatten_bbox_preds = torch.cat(flatten_bbox_preds, dim=1)
+        flatten_decoded_bboxes = self.bbox_coder.decode(
+            flatten_priors[None], flatten_bbox_preds, flatten_stride)
+
+        if with_objectnesses:
+            flatten_objectness = [
+                objectness.permute(0, 2, 3, 1).reshape(num_imgs, -1)
+                for objectness in objectnesses
+            ]
+            flatten_objectness = torch.cat(flatten_objectness, dim=1).sigmoid()
+        else:
+            flatten_objectness = [None for _ in range(num_imgs)]
+
+        results_list = []
+        for (bboxes, scores, objectness,
+             img_meta) in zip(flatten_decoded_bboxes, flatten_cls_scores,
+                              flatten_objectness, batch_img_metas):
+            ori_shape = img_meta['ori_shape']
+            scale_factor = img_meta['scale_factor']
+            if 'pad_param' in img_meta:
+                pad_param = img_meta['pad_param']
+            else:
+                pad_param = None
+
+            score_thr = 0.001
+            # yolox_style does not require the following operations
+            if objectness is not None and score_thr > 0 and not False:
+                conf_inds = objectness > score_thr
+                bboxes = bboxes[conf_inds, :]
+                scores = scores[conf_inds, :]
+                objectness = objectness[conf_inds]
+
+            if objectness is not None:
+                # conf = obj_conf * cls_conf
+                scores *= objectness[:, None]
+
+            if scores.shape[0] == 0:
+                empty_results = InstanceData()
+                empty_results.bboxes = bboxes
+                empty_results.scores = scores[:, 0]
+                empty_results.labels = scores[:, 0].int()
+                results_list.append(empty_results)
+                continue
+
+            nms_pre = 30000
+            #if cfg.multi_label is False:
+            if False:
+                scores, labels = scores.max(1, keepdim=True)
+                scores, _, keep_idxs, results = filter_scores_and_topk(
+                    scores,
+                    score_thr,
+                    nms_pre,
+                    results=dict(labels=labels[:, 0]))
+                labels = results['labels']
+            else:
+                scores, labels, keep_idxs, _ = filter_scores_and_topk(
+                    scores, score_thr, nms_pre)
+
+            results = InstanceData(
+                scores=scores, labels=labels, bboxes=bboxes[keep_idxs])
+
+            if rescale:
+                if pad_param is not None:
+                    results.bboxes -= results.bboxes.new_tensor([
+                        pad_param[2], pad_param[0], pad_param[2], pad_param[0]
+                    ])
+                results.bboxes /= results.bboxes.new_tensor(
+                    scale_factor).repeat((1, 2))
+
+            #if cfg.get('yolox_style', False):
+            if False:
+                # do not need max_per_img
+                cfg.max_per_img = len(results)
+
+            results = self._bbox_post_process(
+                results=results,
+                rescale=False,
+                with_nms=with_nms,
+                img_meta=img_meta)
+            results.bboxes[:, 0::2].clamp_(0, ori_shape[1])
+            results.bboxes[:, 1::2].clamp_(0, ori_shape[0])
+
+            results_list.append(results)
+        return results_list
+
+    def _bbox_post_process(self,
+                           results: InstanceData,
+                           rescale: bool = False,
+                           with_nms: bool = True,
+                           img_meta: Optional[dict] = None) -> InstanceData:
+        """bbox post-processing method.
+
+        The boxes would be rescaled to the original image scale and do
+        the nms operation. Usually `with_nms` is False is used for aug test.
+
+        Args:
+            results (:obj:`InstaceData`): Detection instance results,
+                each item has shape (num_bboxes, ).
+            rescale (bool): If True, return boxes in original image space.
+                Default to False.
+            with_nms (bool): If True, do nms before return boxes.
+                Default to True.
+            img_meta (dict, optional): Image meta info. Defaults to None.
+
+        Returns:
+            :obj:`InstanceData`: Detection results of each image
+            after the post process.
+            Each item usually contains following keys.
+
+                - scores (Tensor): Classification scores, has a shape
+                  (num_instance, )
+                - labels (Tensor): Labels of bboxes, has a shape
+                  (num_instances, ).
+                - bboxes (Tensor): Has a shape (num_instances, 4),
+                  the last dimension 4 arrange as (x1, y1, x2, y2).
+        """
+        if rescale:
+            assert img_meta.get('scale_factor') is not None
+            scale_factor = [1 / s for s in img_meta['scale_factor']]
+            results.bboxes = scale_boxes(results.bboxes, scale_factor)
+
+        if hasattr(results, 'score_factors'):
+            # TODO: Add sqrt operation in order to be consistent with
+            #  the paper.
+            score_factors = results.pop('score_factors')
+            results.scores = results.scores * score_factors
+
+        # filter small size bboxes
+        # if cfg.get('min_bbox_size', -1) >= 0:
+        #     w, h = get_box_wh(results.bboxes)
+        #     valid_mask = (w > cfg.min_bbox_size) & (h > cfg.min_bbox_size)
+        #     if not valid_mask.all():
+        #         results = results[valid_mask]
+
+        max_per_img = 300
+
+        # TODO: deal with `with_nms` and `nms_cfg=None` in test_cfg
+        if with_nms and results.bboxes.numel() > 0:
+            bboxes = get_box_tensor(results.bboxes)
+            det_bboxes, keep_idxs = batched_nms(bboxes, results.scores,
+                                                results.labels)
+            results = results[keep_idxs]
+            # some nms would reweight the score, such as softnms
+            results.scores = det_bboxes[:, -1]
+            results = results[:max_per_img]
+
+        return results

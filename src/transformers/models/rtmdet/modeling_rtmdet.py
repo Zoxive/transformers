@@ -1,3 +1,4 @@
+from typing import Dict, List, Optional
 import torch
 from transformers.models.rtmdet.CSPNeXtPAFPN import CSPNeXtPAFPN
 from transformers.models.rtmdet.RTMDetHead import RTMDetHead
@@ -22,17 +23,18 @@ class RTMDetConvEncoder(nn.Module):
 
         self.model = RTMDetCSPNeXtBackbone(config.backbone_config)
 
-    def forward(self, pixel_values: Tensor, pixel_mask: Tensor):
-        features = self.model(pixel_values).feature_maps
+    def forward(self, pixel_values: Tensor):
+        features = self.model(pixel_values)
 
-        out = []
-        for feature_map in features:
-            # do we need this mask?
-            mask = nn.functional.interpolate(pixel_mask[None].float(), size=feature_map.shape[-2:]).to(torch.bool)[0]
-            out.append((feature_map, mask))
-            #out.append(feature_map)
+        # out = []
+        # for feature_map in features:
+        #     # do we need this mask?
+        #     mask = nn.functional.interpolate(pixel_mask[None].float(), size=feature_map.shape[-2:]).to(torch.bool)[0]
+        #     out.append((feature_map, mask))
+        #     #out.append(feature_map)
 
-        return out
+        # return out
+        return features
 
 # TODO
 size_to_config = {
@@ -45,10 +47,8 @@ class RTMDetModel(RTMDetPreTrainedModel):
     def __init__(self, config: RTMDetConfig):
         super().__init__(config)
 
-        # TODO
-        size_cfg = size_to_config["tiny"]
-        deepen_factor = size_cfg["deepen_factor"]
-        widen_factor = size_cfg["widen_factor"]
+        deepen_factor = config.deepen_factor
+        widen_factor = config.widen_factor
 
         self.backbone = RTMDetConvEncoder(config)
         # TODO fix params
@@ -58,11 +58,24 @@ class RTMDetModel(RTMDetPreTrainedModel):
             deepen_factor=deepen_factor,
             widen_factor=widen_factor,
         )
-        self.head = RTMDetHead(
+        self.bbox_head = RTMDetHead(
             num_classes=config.num_labels, 
             in_channels=256,
-            #widen_factor=widen_factor,
+            widen_factor=widen_factor,
             feat_channels=256,
         )
 
         self.init_weights()
+
+    def forward(self, 
+        pixel_values: Tensor,
+        labels: Optional[List[Dict]] = None,
+    ):
+        outputs = self.backbone(pixel_values)
+
+        sequence_output = outputs[0]
+        
+        features = self.neck(sequence_output)
+        output = self.bbox_head(features)
+
+        return output

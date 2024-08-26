@@ -29,15 +29,20 @@ class RTMDetConfig(PretrainedConfig):
 
     def __init__(
         self,
-        # backbone
         backbone_config=None,
+        num_labels: int = 80,
+        deepen_factor: float = 1.0,
+        widen_factor: float = 1.0,
         **kwargs,
     ):
         if backbone_config is None:
-            backbone_config = RTMDetCSPNeXtConfig()
+            backbone_config = RTMDetCSPNeXtConfig(deepen_factor=deepen_factor, widen_factor=widen_factor)
         
         self.backbone_config = backbone_config
+        self.deepen_factor = deepen_factor
+        self.widen_factor = widen_factor
         super().__init__(**kwargs)
+        self.num_labels = num_labels
 
 class RTMDetCSPNeXtConfig(BackboneConfigMixin, PretrainedConfig):
     model_type = 'rtmdet_cspnext'
