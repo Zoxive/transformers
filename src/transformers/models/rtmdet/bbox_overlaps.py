@@ -418,7 +418,11 @@ def batched_nms(boxes: Tensor,
         scores_after_nms = scores.new_zeros(scores.size())
         for id in torch.unique(idxs):
             mask = (idxs == id).nonzero(as_tuple=False).view(-1)
-            dets, keep = nms(boxes_for_nms[mask], scores[mask], iou_threshold)
+            local_boxes = boxes_for_nms[mask]
+            local_scores = scores[mask]
+            #dets, keep = nms(local_boxes, local_scores, iou_threshold)
+            keep = nms(local_boxes, local_scores, iou_threshold)
+            dets = torch.cat((local_boxes[keep], scores[keep].reshape(-1, 1)), dim=1)
             total_mask[mask[keep]] = True
             scores_after_nms[mask[keep]] = dets[:, -1]
         keep = total_mask.nonzero(as_tuple=False).view(-1)

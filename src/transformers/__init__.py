@@ -1197,7 +1197,7 @@ else:
     _import_structure["models.pvt"].extend(["PvtImageProcessor"])
     _import_structure["models.qwen2_vl"].extend(["Qwen2VLImageProcessor"])
     _import_structure["models.rt_detr"].extend(["RTDetrImageProcessor"])
-    #_import_structure["models.rtmdet"].extend(["RTMDetImageProcessor"])
+    _import_structure["models.rtmdet"].extend(["RTMDetImageProcessor"])
     _import_structure["models.sam"].extend(["SamImageProcessor"])
     _import_structure["models.segformer"].extend(["SegformerFeatureExtractor", "SegformerImageProcessor"])
     _import_structure["models.seggpt"].extend(["SegGptImageProcessor"])
@@ -6024,7 +6024,7 @@ if TYPE_CHECKING:
         from .models.pvt import PvtImageProcessor
         from .models.qwen2_vl import Qwen2VLImageProcessor
         from .models.rt_detr import RTDetrImageProcessor
-        #from .models.rtmdet import RTMDetImageProcessor
+        from .models.rtmdet import RTMDetImageProcessor
         from .models.sam import SamImageProcessor
         from .models.segformer import SegformerFeatureExtractor, SegformerImageProcessor
         from .models.seggpt import SegGptImageProcessor

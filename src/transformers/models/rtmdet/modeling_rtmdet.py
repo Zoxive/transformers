@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 import torch
+from transformers.models.rt_detr.modeling_rt_detr import RTDetrObjectDetectionOutput
 from transformers.models.rtmdet.CSPNeXtPAFPN import CSPNeXtPAFPN
 from transformers.models.rtmdet.RTMDetHead import RTMDetHead
 from ...modeling_utils import PreTrainedModel
@@ -70,12 +71,36 @@ class RTMDetModel(RTMDetPreTrainedModel):
     def forward(self, 
         pixel_values: Tensor,
         labels: Optional[List[Dict]] = None,
+        return_dict: Optional[bool] = None,
     ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    
         outputs = self.backbone(pixel_values)
 
         sequence_output = outputs[0]
+
+        # logits = self.class_labels_classifier(sequence_output)
+        # pred_boxes = self.bbox_predictor(sequence_output).sigmoid()
         
         features = self.neck(sequence_output)
         output = self.bbox_head(features)
 
-        return output
+        logits, pred_boxes = self.bbox_head.pred_test(*output)
+
+        loss, loss_dict, auxiliary_outputs = None, None, None
+
+        if not return_dict:
+            if auxiliary_outputs is not None:
+                output = (logits, pred_boxes) + (auxiliary_outputs,) + outputs
+            else:
+                output = (logits, pred_boxes) + outputs
+            return ((loss, loss_dict) + output) if loss is not None else output
+        
+        # TODO own class
+        return RTDetrObjectDetectionOutput(
+            loss=loss,
+            loss_dict=loss_dict,
+            logits=logits,
+            pred_boxes=pred_boxes,
+            auxiliary_outputs=auxiliary_outputs,
+        )

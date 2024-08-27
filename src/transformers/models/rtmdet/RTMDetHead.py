@@ -140,11 +140,12 @@ class RTMDetSepBNHeadModule(nn.Module):
             share_conv: bool = True,
             pred_kernel_size: int = 1,
             #conv_cfg: dict = None,
+            exp_on_reg: bool = False,
+            with_objectness: bool = True,
             norm_cfg: dict = dict(type='BN'),
             act_cfg: dict = dict(type='SiLU', inplace=True),
     ):
         super().__init__()
-        self.share_conv = share_conv
         self.num_classes = num_classes
         self.pred_kernel_size = pred_kernel_size
         self.feat_channels = int(feat_channels * widen_factor)
@@ -155,6 +156,9 @@ class RTMDetSepBNHeadModule(nn.Module):
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
         self.featmap_strides = featmap_strides
+        self.share_conv = share_conv
+        self.exp_on_reg = exp_on_reg
+        self.with_objectness = with_objectness
 
         self.in_channels = int(in_channels * widen_factor)
 
@@ -195,6 +199,7 @@ class RTMDetSepBNHeadModule(nn.Module):
             self.cls_convs.append(cls_convs)
             self.reg_convs.append(reg_convs)
 
+            # TODO these are all the same, can we just use one?
             self.rtm_cls.append(
                 nn.Conv2d(
                     self.feat_channels,
@@ -1128,6 +1133,85 @@ class RTMDetHead(nn.Module):
             loss_obj=loss_obj * batch_size * world_size,
             loss_bbox=loss_box * batch_size * world_size)
 
+    def pred_test(self, cls_scores: List[Tensor], bbox_preds: List[Tensor], with_nms: bool = True) -> List:
+        assert len(cls_scores) == len(bbox_preds)
+        with_objectnesses = False
+
+        # multi_label = cfg.multi_label
+        # multi_label &= self.num_classes > 1
+        # cfg.multi_label = multi_label
+
+        # TODOs
+        num_imgs = cls_scores[0].shape[0]
+        featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
+
+        # If the shape does not change, use the previous mlvl_priors
+        if featmap_sizes != self.featmap_sizes:
+            self.mlvl_priors = self.prior_generator.grid_priors(
+                featmap_sizes,
+                dtype=cls_scores[0].dtype,
+                device=cls_scores[0].device)
+            self.featmap_sizes = featmap_sizes
+        flatten_priors = torch.cat(self.mlvl_priors)
+
+        mlvl_strides = [
+            flatten_priors.new_full(
+                (featmap_size.numel() * self.num_base_priors, ), stride) for
+            featmap_size, stride in zip(featmap_sizes, self.featmap_strides)
+        ]
+        flatten_stride = torch.cat(mlvl_strides)
+
+        # flatten cls_scores, bbox_preds and objectness
+        flatten_cls_scores = [
+            cls_score.permute(0, 2, 3, 1).reshape(num_imgs, -1,
+                                                  self.num_classes)
+            for cls_score in cls_scores
+        ]
+        flatten_bbox_preds = [
+            bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+            for bbox_pred in bbox_preds
+        ]
+
+        flatten_cls_scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
+        flatten_bbox_preds = torch.cat(flatten_bbox_preds, dim=1)
+        flatten_decoded_bboxes = self.bbox_coder.decode(
+            flatten_priors[None], flatten_bbox_preds, flatten_stride)
+
+        #return flatten_cls_scores, flatten_decoded_bboxes
+        #scores, labels, bboxes = [], [], []
+
+        logits = []
+        pred_boxes = []
+        
+        for (bboxes, scores) in zip(flatten_decoded_bboxes, flatten_cls_scores):
+            score_thr = 0.001
+            nms_pre = 30000
+            scores, labels, keep_idxs, _ = filter_scores_and_topk(
+                scores, score_thr, nms_pre)
+
+            results = {
+                "scores": scores, "labels": labels, "bboxes": bboxes[keep_idxs]
+            }
+
+            #if cfg.get('yolox_style', False):
+            if False:
+                # do not need max_per_img
+                cfg.max_per_img = len(results)
+
+            results = self._bbox_post_process(
+                results=results,
+                rescale=False,
+                with_nms=with_nms)
+            #results.bboxes[:, 0::2].clamp_(0, ori_shape[1])
+            #results.bboxes[:, 1::2].clamp_(0, ori_shape[0])
+            logits.append(results['scores'])
+            pred_boxes.append(results['bboxes'])
+
+        logits = torch.stack(logits)
+        pred_boxes = torch.stack(pred_boxes)
+
+        return logits, pred_boxes
+
     def predict_by_feat(self,
                         cls_scores: List[Tensor],
                         bbox_preds: List[Tensor],
@@ -1296,7 +1380,7 @@ class RTMDetHead(nn.Module):
         return results_list
 
     def _bbox_post_process(self,
-                           results: InstanceData,
+                           results,
                            rescale: bool = False,
                            with_nms: bool = True,
                            img_meta: Optional[dict] = None) -> InstanceData:
@@ -1346,14 +1430,18 @@ class RTMDetHead(nn.Module):
 
         max_per_img = 300
 
+        bboxes = results["bboxes"]
+        scores = results["scores"]
+        labels = results["labels"]
+
         # TODO: deal with `with_nms` and `nms_cfg=None` in test_cfg
-        if with_nms and results.bboxes.numel() > 0:
-            bboxes = get_box_tensor(results.bboxes)
-            det_bboxes, keep_idxs = batched_nms(bboxes, results.scores,
-                                                results.labels)
-            results = results[keep_idxs]
+        if with_nms and bboxes.numel() > 0:
+            bboxes = get_box_tensor(bboxes)
+            det_bboxes, keep_idxs = batched_nms(bboxes, scores, labels)
             # some nms would reweight the score, such as softnms
-            results.scores = det_bboxes[:, -1]
-            results = results[:max_per_img]
+            scores2 = det_bboxes[:, -1][:max_per_img]
+            keep_idxs = keep_idxs[:max_per_img]
+            #results = results[:max_per_img]
+            return {"bboxes": bboxes[keep_idxs], "scores": scores2, "labels": labels[keep_idxs]}
 
         return results

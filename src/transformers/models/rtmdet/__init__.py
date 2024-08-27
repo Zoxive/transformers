@@ -18,13 +18,13 @@ from ...utils import OptionalDependencyNotAvailable, _LazyModule, is_torch_avail
 
 _import_structure = {"configuration_rtmdet": ["RTMDetConfig", "RTMDetCSPNeXtConfig"]}
 
-# try:
-#     if not is_vision_available():
-#         raise OptionalDependencyNotAvailable()
-# except OptionalDependencyNotAvailable:
-#     pass
-# else:
-#     #_import_structure["image_processing_rt_detr"] = ["RTDetrImageProcessor"]
+try:
+    if not is_vision_available():
+        raise OptionalDependencyNotAvailable()
+except OptionalDependencyNotAvailable:
+    pass
+else:
+    _import_structure["image_processing_rtmdet"] = ["RTMDetImageProcessor"]
 
 try:
     if not is_torch_available():
@@ -45,13 +45,13 @@ else:
 if TYPE_CHECKING:
     from .configuration_rtmdet import RTMDetConfig, RTMDetCSPNeXtConfig
 
-    # try:
-    #     if not is_vision_available():
-    #         raise OptionalDependencyNotAvailable()
-    # except OptionalDependencyNotAvailable:
-    #     pass
-    # else:
-    #     from .image_processing_rt_detr import RTDetrImageProcessor
+    try:
+        if not is_vision_available():
+            raise OptionalDependencyNotAvailable()
+    except OptionalDependencyNotAvailable:
+        pass
+    else:
+        from .image_processing_rtmdet import RTMDetImageProcessor
 
     try:
         if not is_torch_available():
