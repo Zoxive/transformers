@@ -152,29 +152,16 @@ transforms_imagenet = transforms.Compose([
 ])
 
 image_processor = RTMDetImageProcessor(size={"height": 640, "width": 640})
-#image_processor2 = RTDetrImageProcessor(size={"height": 640, "width": 640})
 
-#input = image_processor(images=img, return_tensors="pt")
-input = transforms_imagenet(img)
 #logits, pred_boxes, outputs = model.forward(**input)
+input = transforms_imagenet(img)
+#input = image_processor(images=img, return_tensors="pt")['pixel_values'].squeeze()
 with torch.no_grad():
     outputs = model(input.unsqueeze(0))
 
-# model2 = RTDetrForObjectDetection.from_pretrained("PekingU/rtdetr_r50vd")
-# model2.eval()
-# with torch.no_grad():
-#     outputs2 = model2(**input)
-
-# num_boxes = len(pred_boxes)
-
-# for i in range(num_boxes):
-#     box = pred_boxes[i]
-#     logit = logits[i]
-#     best_class = torch.argmax(logit)
-#     confidence = torch.max(logit)
-#     print(box, best_class, confidence)
-
 logits, pred_boxes = outputs.logits, outputs.pred_boxes
+
+print('Image size', input.shape)
 
 for boxes, logits in zip(pred_boxes, logits):
     fig, ax = plt.subplots()
@@ -198,33 +185,3 @@ for boxes, logits in zip(pred_boxes, logits):
         title = f'{label} {confidence:.2}'
         plt.text(box[0], box[1], title, color='red')
     plt.show()
-
-exit()
-
-#output = Output(logits=logits, pred_boxes=pred_boxes)
-
-w,h = img.size
-target_size = torch.tensor([[h, w]])
-print('target_size', target_size)
-#results = image_processor.post_process_object_detection(outputs=outputs, target_sizes=target_size, threshold=0.6)[0]
-results = image_processor.post_process_object_detection(outputs=outputs, threshold=0.6)[0]
-
-print('results', len(results))
-
-scores = results['scores']
-boxes = results['boxes']
-labels = results['labels']
-
-# lets draw the boxes on the image
-
-
-
-#draw_boxes(img, pred_boxes, logits)
-for box, score, label in zip(boxes, scores, labels):
-    score_val = score.item()
-    label_val = label.item()
-
-    class_name = coco_classes[label_val + 1]
-    
-    print(score_val, box, class_name, label_val)
-    #draw_boxes(img, [box], [label])

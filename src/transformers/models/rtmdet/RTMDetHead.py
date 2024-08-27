@@ -1133,7 +1133,7 @@ class RTMDetHead(nn.Module):
             loss_obj=loss_obj * batch_size * world_size,
             loss_bbox=loss_box * batch_size * world_size)
 
-    def pred_test(self, cls_scores: List[Tensor], bbox_preds: List[Tensor], with_nms: bool = True) -> List:
+    def pred_test(self, cls_scores: List[Tensor], bbox_preds: List[Tensor], img_width: int, img_height: int, with_nms: bool = True) -> List:
         assert len(cls_scores) == len(bbox_preds)
         with_objectnesses = False
 
@@ -1177,7 +1177,7 @@ class RTMDetHead(nn.Module):
         flatten_decoded_bboxes = self.bbox_coder.decode(
             flatten_priors[None], flatten_bbox_preds, flatten_stride)
 
-        #return flatten_cls_scores, flatten_decoded_bboxes
+        return flatten_cls_scores, flatten_decoded_bboxes
         #scores, labels, bboxes = [], [], []
 
         logits = []
@@ -1186,11 +1186,11 @@ class RTMDetHead(nn.Module):
         for (bboxes, scores) in zip(flatten_decoded_bboxes, flatten_cls_scores):
             score_thr = 0.001
             nms_pre = 30000
-            scores, labels, keep_idxs, _ = filter_scores_and_topk(
+            mutated_scores, labels, keep_idxs, _ = filter_scores_and_topk(
                 scores, score_thr, nms_pre)
 
             results = {
-                "scores": scores, "labels": labels, "bboxes": bboxes[keep_idxs]
+                "scores": mutated_scores, "labels": labels, "bboxes": bboxes[keep_idxs]
             }
 
             #if cfg.get('yolox_style', False):
@@ -1202,10 +1202,11 @@ class RTMDetHead(nn.Module):
                 results=results,
                 rescale=False,
                 with_nms=with_nms)
-            #results.bboxes[:, 0::2].clamp_(0, ori_shape[1])
-            #results.bboxes[:, 1::2].clamp_(0, ori_shape[0])
-            logits.append(results['scores'])
-            pred_boxes.append(results['bboxes'])
+            results_bboxes = results['bboxes']
+            results_bboxes[:, 0::2].clamp_(0, img_width)
+            results_bboxes[:, 1::2].clamp_(0, img_height)
+            logits.append(results['labels'])
+            pred_boxes.append(results_bboxes)
 
         logits = torch.stack(logits)
         pred_boxes = torch.stack(pred_boxes)
@@ -1434,14 +1435,14 @@ class RTMDetHead(nn.Module):
         scores = results["scores"]
         labels = results["labels"]
 
-        # TODO: deal with `with_nms` and `nms_cfg=None` in test_cfg
         if with_nms and bboxes.numel() > 0:
             bboxes = get_box_tensor(bboxes)
             det_bboxes, keep_idxs = batched_nms(bboxes, scores, labels)
             # some nms would reweight the score, such as softnms
             scores2 = det_bboxes[:, -1][:max_per_img]
             keep_idxs = keep_idxs[:max_per_img]
+            final_boxes = det_bboxes[:max_per_img]
             #results = results[:max_per_img]
-            return {"bboxes": bboxes[keep_idxs], "scores": scores2, "labels": labels[keep_idxs]}
+            return {"bboxes": final_boxes, "scores": scores2, "labels": labels[keep_idxs]}
 
-        return results
+        raise NotImplementedError("Not implemented with_nms=False")

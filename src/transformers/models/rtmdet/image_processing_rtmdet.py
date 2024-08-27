@@ -18,6 +18,7 @@ import pathlib
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
+from torch import nn
 
 from ...feature_extraction_utils import BatchFeature
 from ...image_processing_utils import BaseImageProcessor, get_size_dict
@@ -824,7 +825,6 @@ class RTMDetImageProcessor(BaseImageProcessor):
         outputs,
         threshold: float = 0.5,
         target_sizes: Union[TensorType, List[Tuple]] = None,
-        use_focal_loss: bool = True,
     ):
         """
         Converts the raw output of [`DetrForObjectDetection`] into final bounding boxes in (top_left_x, top_left_y,
@@ -848,8 +848,13 @@ class RTMDetImageProcessor(BaseImageProcessor):
         """
         requires_backends(self, ["torch"])
         out_logits, out_bbox = outputs.logits, outputs.pred_boxes
-        # convert from relative cxcywh to absolute xyxy
-        boxes = center_to_corners_format(out_bbox)
+
+        # out_logits is just the labels
+        # out_bbox is the predicted boxes in x0, y0, x1, y1, score format
+
+        # lets remove the score from the boxes
+        boxes = out_bbox[:, :, :-1]
+        
         if target_sizes is not None:
             if len(out_logits) != len(target_sizes):
                 raise ValueError(
@@ -864,28 +869,23 @@ class RTMDetImageProcessor(BaseImageProcessor):
             scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(boxes.device)
             boxes = boxes * scale_fct[:, None, :]
 
-        num_top_queries = out_logits.shape[1]
-        num_classes = out_logits.shape[2]
+        # num_top_queries = out_logits.shape[1]
+        # #num_classes = out_logits.shape[2]
 
-        if use_focal_loss:
-            scores = torch.nn.functional.sigmoid(out_logits)
-            scores, index = torch.topk(scores.flatten(1), num_top_queries, axis=-1)
-            labels = index % num_classes
-            index = index // num_classes
-            boxes = boxes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, boxes.shape[-1]))
-        else:
-            scores = torch.nn.functional.softmax(out_logits)[:, :, :-1]
-            scores, labels = scores.max(dim=-1)
-            if scores.shape[1] > num_top_queries:
-                scores, index = torch.topk(scores, num_top_queries, dim=-1)
-                labels = torch.gather(labels, dim=1, index=index)
-                boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
+        # scores = torch.nn.functional.softmax(out_logits)[:, :, :-1]
+        # scores, labels = scores.max(dim=-1)
+        # if scores.shape[1] > num_top_queries:
+        #     scores, index = torch.topk(scores, num_top_queries, dim=-1)
+        #     labels = torch.gather(labels, dim=1, index=index)
+        #     boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
 
         results = []
-        for s, l, b in zip(scores, labels, boxes):
-            score = s[s > threshold]
-            label = l[s > threshold]
-            box = b[s > threshold]
+        for b, s, l in zip(boxes, out_bbox, out_logits):
+            #score = s[:, -1]
+            index_with_scores_above_threshold = s[:, -1] > threshold
+            box = b[index_with_scores_above_threshold]
+            label = l[index_with_scores_above_threshold]
+            score = s[index_with_scores_above_threshold, -1]
             results.append({"scores": score, "labels": label, "boxes": box})
 
         return results

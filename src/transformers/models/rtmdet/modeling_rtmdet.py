@@ -85,7 +85,8 @@ class RTMDetModel(RTMDetPreTrainedModel):
         features = self.neck(sequence_output)
         output = self.bbox_head(features)
 
-        logits, pred_boxes = self.bbox_head.pred_test(*output)
+        img_width, img_height = pixel_values.shape[-2:]
+        logits, pred_boxes = self.bbox_head.pred_test(*output, img_width=img_width, img_height=img_height)
 
         loss, loss_dict, auxiliary_outputs = None, None, None
 
