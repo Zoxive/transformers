@@ -94,32 +94,6 @@ coco_classes = {0: u'__background__',
  79: u'hair drier',
  80: u'toothbrush'}
 
-class Output:
-    def __init__(self, logits, pred_boxes):
-        self.logits = torch.tensor(logits)
-        self.pred_boxes = torch.tensor(pred_boxes)
-
-def draw_boxes(img, boxes, labels):
-    # Create figure and axes
-    fig, ax = plt.subplots()
-    # Display the image
-    ax.imshow(img)
-    for box, logit in zip(boxes, labels):
-        best_class = torch.argmax(logit)
-        confidence = torch.max(logit)
-        if confidence < 0.5:
-            continue
-
-        # we need to scale the boxes back to the image size
-        
-        box = box.detach().numpy()
-        # Create a Rectangle patch
-        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='r', facecolor='none')
-        # Add the patch to the Axes
-        ax.add_patch(rect)
-        plt.text(box[0], box[1], best_class, color='red')
-    plt.show()
-
 # teacher
 #checkpoint = 'https://download.openmmlab.com/mmrazor/v1/rtmdet_distillation/kd_tiny_rtmdet_s_neck_300e_coco/kd_tiny_rtmdet_s_neck_300e_coco_20230213_104240-e1e4197c.pth'
 # yolo version
@@ -141,63 +115,38 @@ img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n045
 img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n03770679_minivan.JPEG'
 img_url = '/Users/kyle/github/catchlog_data/images/dftdfs345354.jpg'
 img_url = '/Users/kyle/github/Mask_RCNN/images/8239308689_efa6c11b08_z.jpg'
-img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
+#img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
 # load the image into memory
 img = Image.open(img_url)#requests.get(img_url, stream=True).raw)
-transforms_imagenet = transforms.Compose([
-    #transforms.Resize(),
-    transforms.CenterCrop(640),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-image_processor = RTMDetImageProcessor(size={"height": 640, "width": 640})
-#image_processor2 = RTDetrImageProcessor(size={"height": 640, "width": 640})
-
-#input = image_processor(images=img, return_tensors="pt")
-input = transforms_imagenet(img)
-#logits, pred_boxes, outputs = model.forward(**input)
+image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, pad_size={"height": 640, "width": 640})
+input = image_processor(images=img, return_tensors="pt")['pixel_values'].squeeze()
 with torch.no_grad():
     outputs = model(input.unsqueeze(0))
 
-# model2 = RTDetrForObjectDetection.from_pretrained("PekingU/rtdetr_r50vd")
-# model2.eval()
-# with torch.no_grad():
-#     outputs2 = model2(**input)
+target_size=img.size[::-1]
+#results = image_processor.post_process_object_detection(outputs=outputs, target_sizes=[target_size])[0]
+results = image_processor.post_process_object_detection(outputs=outputs)[0]
 
-# num_boxes = len(pred_boxes)
+print('Result', len(results["scores"]))
 
-# for i in range(num_boxes):
-#     box = pred_boxes[i]
-#     logit = logits[i]
-#     best_class = torch.argmax(logit)
-#     confidence = torch.max(logit)
-#     print(box, best_class, confidence)
-
-logits, pred_boxes = outputs.logits, outputs.pred_boxes
-
-for boxes, logits in zip(pred_boxes, logits):
-    fig, ax = plt.subplots()
+fig, ax = plt.subplots()
+ax.imshow(input.permute(1, 2, 0))
+#ax.imshow(img)
+for confidence, best_class, box in zip(results["scores"], results["labels"], results["boxes"]):
     # Display the image
-    ax.imshow(input.permute(1, 2, 0))
-    #ax.imshow(img)
-    for box, logit in zip(boxes, logits):
-        best_class = torch.argmax(logit)
-        confidence = torch.max(logit)
-        if confidence < 0.5:
-            continue
-
-        # we need to scale the boxes back to the image size
-        
-        box = box.detach().numpy()
-        # Create a Rectangle patch
-        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='r', facecolor='none')
-        # Add the patch to the Axes
-        ax.add_patch(rect)
-        label = coco_classes[best_class.item()+1]
-        title = f'{label} {confidence:.2}'
-        plt.text(box[0], box[1], title, color='red')
-    plt.show()
+    if confidence < 0.5:
+        continue
+    
+    box = box.detach().numpy()
+    # Create a Rectangle patch
+    rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='r', facecolor='none')
+    # Add the patch to the Axes
+    ax.add_patch(rect)
+    label = coco_classes[best_class.item()+1]
+    title = f'{label} {confidence:.2}'
+    print(title)
+    plt.text(box[0], box[1], title, color='red')
+plt.show()
 
 exit()
 

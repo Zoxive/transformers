@@ -205,7 +205,7 @@ class RTMDetImageProcessor(BaseImageProcessor):
             `preprocess` method.
             Controls whether to normalize the image. Can be overridden by the `do_normalize` parameter in the
             `preprocess` method.
-        do_normalize (`bool`, *optional*, defaults to `False`):
+        do_normalize (`bool`, *optional*, defaults to `True`):
             Whether to normalize the image.
         image_mean (`float` or `List[float]`, *optional*, defaults to `IMAGENET_DEFAULT_MEAN`):
             Mean values to use when normalizing the image. Can be a single value or a list of values, one for each
@@ -217,7 +217,7 @@ class RTMDetImageProcessor(BaseImageProcessor):
             Controls whether to convert the annotations to the format expected by the DETR model. Converts the
             bounding boxes to the format `(center_x, center_y, width, height)` and in the range `[0, 1]`.
             Can be overridden by the `do_convert_annotations` parameter in the `preprocess` method.
-        do_pad (`bool`, *optional*, defaults to `False`):
+        do_pad (`bool`, *optional*, defaults to `True`):
             Controls whether to pad the image. Can be overridden by the `do_pad` parameter in the `preprocess`
             method. If `True`, padding will be applied to the bottom and right of the image with zeros.
             If `pad_size` is provided, the image will be padded to the specified dimensions.
@@ -238,11 +238,11 @@ class RTMDetImageProcessor(BaseImageProcessor):
         resample: PILImageResampling = PILImageResampling.BILINEAR,
         do_rescale: bool = True,
         rescale_factor: Union[int, float] = 1 / 255,
-        do_normalize: bool = False,
+        do_normalize: bool = True,
         image_mean: Union[float, List[float]] = None,
         image_std: Union[float, List[float]] = None,
         do_convert_annotations: bool = True,
-        do_pad: bool = False,
+        do_pad: bool = True,
         pad_size: Optional[Dict[str, int]] = None,
         **kwargs,
     ) -> None:
@@ -824,6 +824,7 @@ class RTMDetImageProcessor(BaseImageProcessor):
         self,
         outputs,
         threshold: float = 0.5,
+        use_focal_loss: bool = True,
         target_sizes: Union[TensorType, List[Tuple]] = None,
     ):
         """
@@ -847,14 +848,22 @@ class RTMDetImageProcessor(BaseImageProcessor):
             in the batch as predicted by the model.
         """
         requires_backends(self, ["torch"])
+
         out_logits, out_bbox = outputs.logits, outputs.pred_boxes
 
-        # out_logits is just the labels
-        # out_bbox is the predicted boxes in x0, y0, x1, y1, score format
+        if target_sizes is not None:
+            if len(out_logits) != len(target_sizes):
+                raise ValueError(
+                    "Make sure that you pass in as many target sizes as the batch dimension of the logits"
+                )
 
-        # lets remove the score from the boxes
-        boxes = out_bbox[:, :, :-1]
-        
+        #prob = nn.functional.softmax(out_logits, -1)
+        #scores, labels = prob[..., :-1].max(-1)
+
+        boxes = out_bbox
+        num_top_queries = out_logits.shape[1]
+
+        # Convert from relative [0, 1] to absolute [0, height] coordinates
         if target_sizes is not None:
             if len(out_logits) != len(target_sizes):
                 raise ValueError(
@@ -869,23 +878,31 @@ class RTMDetImageProcessor(BaseImageProcessor):
             scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(boxes.device)
             boxes = boxes * scale_fct[:, None, :]
 
-        # num_top_queries = out_logits.shape[1]
-        # #num_classes = out_logits.shape[2]
+        num_top_queries = out_logits.shape[1]
+        num_classes = out_logits.shape[2]
 
-        # scores = torch.nn.functional.softmax(out_logits)[:, :, :-1]
-        # scores, labels = scores.max(dim=-1)
-        # if scores.shape[1] > num_top_queries:
-        #     scores, index = torch.topk(scores, num_top_queries, dim=-1)
-        #     labels = torch.gather(labels, dim=1, index=index)
-        #     boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
+        #prob = nn.functional.softmax(out_logits, -1)
+        #scores_1, labels_1 = prob[..., :-1].max(-1)
+
+        if use_focal_loss:
+            scores = torch.nn.functional.sigmoid(out_logits)
+            scores, index = torch.topk(scores.flatten(1), num_top_queries, axis=-1)
+            labels = index % num_classes
+            index = index // num_classes
+            boxes = boxes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, boxes.shape[-1]))
+        else:
+            scores = torch.nn.functional.softmax(out_logits)[:, :, :-1]
+            scores, labels = scores.max(dim=-1)
+            if scores.shape[1] > num_top_queries:
+                scores, index = torch.topk(scores, num_top_queries, dim=-1)
+                labels = torch.gather(labels, dim=1, index=index)
+                boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
 
         results = []
-        for b, s, l in zip(boxes, out_bbox, out_logits):
-            #score = s[:, -1]
-            index_with_scores_above_threshold = s[:, -1] > threshold
-            box = b[index_with_scores_above_threshold]
-            label = l[index_with_scores_above_threshold]
-            score = s[index_with_scores_above_threshold, -1]
+        for s, l, b in zip(scores, labels, boxes):
+            score = s[s > threshold]
+            label = l[s > threshold]
+            box = b[s > threshold]
             results.append({"scores": score, "labels": label, "boxes": box})
 
         return results

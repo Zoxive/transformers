@@ -94,38 +94,7 @@ coco_classes = {0: u'__background__',
  79: u'hair drier',
  80: u'toothbrush'}
 
-class Output:
-    def __init__(self, logits, pred_boxes):
-        self.logits = torch.tensor(logits)
-        self.pred_boxes = torch.tensor(pred_boxes)
-
-def draw_boxes(img, boxes, labels):
-    # Create figure and axes
-    fig, ax = plt.subplots()
-    # Display the image
-    ax.imshow(img)
-    for box, logit in zip(boxes, labels):
-        best_class = torch.argmax(logit)
-        confidence = torch.max(logit)
-        if confidence < 0.5:
-            continue
-
-        # we need to scale the boxes back to the image size
-        
-        box = box.detach().numpy()
-        # Create a Rectangle patch
-        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='r', facecolor='none')
-        # Add the patch to the Axes
-        ax.add_patch(rect)
-        plt.text(box[0], box[1], best_class, color='red')
-    plt.show()
-
-# teacher
-#checkpoint = 'https://download.openmmlab.com/mmrazor/v1/rtmdet_distillation/kd_tiny_rtmdet_s_neck_300e_coco/kd_tiny_rtmdet_s_neck_300e_coco_20230213_104240-e1e4197c.pth'
-# yolo version
 checkpoint = 'https://download.openmmlab.com/mmyolo/v0/rtmdet/rtmdet_tiny_syncbn_fast_8xb32-300e_coco/rtmdet_tiny_syncbn_fast_8xb32-300e_coco_20230102_140117-dbb1dc83.pth'
-# mmdetection version
-#checkpoint = 'https://download.openmmlab.com/mmdetection/v3.0/rtmdet/rtmdet_tiny_8xb32-300e_coco/rtmdet_tiny_8xb32-300e_coco_20220902_112414-78e30dcc.pth'
 
 cfg = RTMDetConfig(deepen_factor=0.167, widen_factor=0.375, num_labels=80)
 model = RTMDetModel(cfg)
@@ -141,20 +110,11 @@ img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n045
 img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n03770679_minivan.JPEG'
 img_url = '/Users/kyle/github/catchlog_data/images/dftdfs345354.jpg'
 img_url = '/Users/kyle/github/Mask_RCNN/images/8239308689_efa6c11b08_z.jpg'
-img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
+#img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
 # load the image into memory
 img = Image.open(img_url)#requests.get(img_url, stream=True).raw)
-transforms_imagenet = transforms.Compose([
-    #transforms.Resize(),
-    transforms.CenterCrop(640),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, pad_size={"height": 640, "width": 640})
 
-image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, do_normalize=True, pad_size={"height": 640, "width": 640})
-
-#logits, pred_boxes, outputs = model.forward(**input)
-#input = transforms_imagenet(img)
 input = image_processor(images=img, return_tensors="pt")['pixel_values'].squeeze()
 with torch.no_grad():
     outputs = model(input.unsqueeze(0))
