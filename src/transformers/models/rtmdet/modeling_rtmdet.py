@@ -1,13 +1,20 @@
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 import torch
 from transformers.models.rt_detr.modeling_rt_detr import RTDetrObjectDetectionOutput
-from transformers.models.rtmdet.CSPNeXtPAFPN import CSPNeXtPAFPN
-from transformers.models.rtmdet.RTMDetHead import RTMDetHead
+from .CSPNeXtPAFPN import CSPNeXtPAFPN
+from .RTMDetHead import RTMDetHead
+from ...utils.generic import ModelOutput
 from ...modeling_utils import PreTrainedModel
 from .configuration_rtmdet import RTMDetConfig
 from torch import Tensor
 import torch.nn as nn
 from .modeling_rtmdet_cspnext import RTMDetCSPNeXtBackbone
+
+@dataclass
+class RTMDetObjectDetectionOutput(ModelOutput):
+    logits: torch.FloatTensor = None
+    pred_boxes: torch.FloatTensor = None
 
 class RTMDetPreTrainedModel(PreTrainedModel):
     config_class = RTMDetConfig

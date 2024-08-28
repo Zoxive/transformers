@@ -881,9 +881,6 @@ class RTMDetImageProcessor(BaseImageProcessor):
         num_top_queries = out_logits.shape[1]
         num_classes = out_logits.shape[2]
 
-        #prob = nn.functional.softmax(out_logits, -1)
-        #scores_1, labels_1 = prob[..., :-1].max(-1)
-
         if use_focal_loss:
             scores = torch.nn.functional.sigmoid(out_logits)
             scores, index = torch.topk(scores.flatten(1), num_top_queries, axis=-1)

@@ -42,7 +42,8 @@ class RTMDetCSPNeXtPreTrainedModel(PreTrainedModel):
 
     def _init_weights(self, module):
         # TODO: init weights
-        raise NotImplementedError()
+        #raise NotImplementedError()
+        pass
 
 
 def efficient_conv_bn_eval_forward(bn: nn.modules.batchnorm,
@@ -876,11 +877,12 @@ class RTMDetCSPNeXtBackbone(RTMDetCSPNeXtPreTrainedModel, BackboneMixin):
         # TODO?!?
         #KaimingInit(a = math.sqrt(5), distribution='uniform', mode='fan_in', nonlinearity='leaky_relu')(self)
         super()._init_backbone(config)
-        
-        self.config = config
 
         self.embedder = RTMDetCSPNeXtEmbeddings(config)
         self.encoder = RTMDetCSPNeXtEncoder(config)
+
+        # initialize the weights and apply final processing
+        self.post_init()
         
     def forward(self, 
                 pixel_valuesixel_values: Tensor, 

@@ -109,8 +109,8 @@ img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n015
 img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n04517823_vacuum.JPEG'
 img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n03770679_minivan.JPEG'
 img_url = '/Users/kyle/github/catchlog_data/images/dftdfs345354.jpg'
-img_url = '/Users/kyle/github/Mask_RCNN/images/8239308689_efa6c11b08_z.jpg'
-#img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
+#img_url = '/Users/kyle/github/Mask_RCNN/images/8239308689_efa6c11b08_z.jpg'
+img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
 # load the image into memory
 img = Image.open(img_url)#requests.get(img_url, stream=True).raw)
 image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, pad_size={"height": 640, "width": 640})
@@ -123,16 +123,25 @@ logits, pred_boxes = outputs.logits, outputs.pred_boxes
 
 print('Image size', input.shape)
 
-for boxes, logits in zip(pred_boxes, logits):
+scores = torch.nn.functional.sigmoid(logits)
+#scores = torch.nn.functional.softmax(logits)
+scores, index = torch.topk(scores.flatten(1), 300, axis=-1)
+labels = index % 80
+index = index // 80
+boxe2 = pred_boxes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, 4))
+
+#for boxes, logits in zip(pred_boxes, logits):
+for boxes, logits, scores in zip(boxe2, labels, scores):
     fig, ax = plt.subplots()
     # Display the image
-    ax.imshow(input.permute(1, 2, 0))
-    #ax.imshow(img)
+    #ax.imshow(input.permute(1, 2, 0))
+    ax.imshow(img)
     print('Results', len(logits))
-    for box, logit in zip(boxes, logits):
-        best_class = torch.argmax(logit)
-        confidence = torch.max(logit)
-        if confidence < 0.4:
+    
+    for box, best_class, confidence in zip(boxes, logits, scores):
+        #best_class = torch.argmax(logit)
+        #confidence = torch.max(logit)
+        if confidence < 0.6:
             continue
 
         # we need to scale the boxes back to the image size

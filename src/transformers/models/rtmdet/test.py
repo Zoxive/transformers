@@ -115,7 +115,7 @@ img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n045
 img_url = 'https://github.com/EliSchwartz/imagenet-sample-images/raw/master/n03770679_minivan.JPEG'
 img_url = '/Users/kyle/github/catchlog_data/images/dftdfs345354.jpg'
 img_url = '/Users/kyle/github/Mask_RCNN/images/8239308689_efa6c11b08_z.jpg'
-#img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
+img_url = '/Users/kyle/github/Mask_RCNN/images/8734543718_37f6b8bd45_z.jpg'
 # load the image into memory
 img = Image.open(img_url)#requests.get(img_url, stream=True).raw)
 image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, pad_size={"height": 640, "width": 640})
@@ -130,11 +130,11 @@ results = image_processor.post_process_object_detection(outputs=outputs)[0]
 print('Result', len(results["scores"]))
 
 fig, ax = plt.subplots()
-ax.imshow(input.permute(1, 2, 0))
-#ax.imshow(img)
+#ax.imshow(input.permute(1, 2, 0))
+ax.imshow(img)
 for confidence, best_class, box in zip(results["scores"], results["labels"], results["boxes"]):
     # Display the image
-    if confidence < 0.5:
+    if confidence < 0.6:
         continue
     
     box = box.detach().numpy()
