@@ -151,11 +151,11 @@ transforms_imagenet = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-image_processor = RTMDetImageProcessor(size={"height": 640, "width": 640})
+image_processor = RTMDetImageProcessor(size={"max_height": 640, "max_width": 640}, do_pad=True, do_normalize=True, pad_size={"height": 640, "width": 640})
 
 #logits, pred_boxes, outputs = model.forward(**input)
-input = transforms_imagenet(img)
-#input = image_processor(images=img, return_tensors="pt")['pixel_values'].squeeze()
+#input = transforms_imagenet(img)
+input = image_processor(images=img, return_tensors="pt")['pixel_values'].squeeze()
 with torch.no_grad():
     outputs = model(input.unsqueeze(0))
 
@@ -168,20 +168,22 @@ for boxes, logits in zip(pred_boxes, logits):
     # Display the image
     ax.imshow(input.permute(1, 2, 0))
     #ax.imshow(img)
+    print('Results', len(logits))
     for box, logit in zip(boxes, logits):
         best_class = torch.argmax(logit)
         confidence = torch.max(logit)
-        if confidence < 0.5:
+        if confidence < 0.4:
             continue
 
         # we need to scale the boxes back to the image size
         
         box = box.detach().numpy()
         # Create a Rectangle patch
-        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='r', facecolor='none')
+        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor='blue', facecolor='none')
         # Add the patch to the Axes
         ax.add_patch(rect)
         label = coco_classes[best_class.item()+1]
         title = f'{label} {confidence:.2}'
-        plt.text(box[0], box[1], title, color='red')
+        print(title)
+        plt.text(box[0], box[1], title, color='blue')
     plt.show()

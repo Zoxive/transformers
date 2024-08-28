@@ -4,6 +4,7 @@ import numpy as np
 from torch import Tensor
 import torch
 import torch.nn as nn
+import torchvision
 
 from .sampler import PseudoSampler
 from .batch_dsl_assigner import BatchDynamicSoftLabelAssigner
@@ -1177,8 +1178,32 @@ class RTMDetHead(nn.Module):
         flatten_decoded_bboxes = self.bbox_coder.decode(
             flatten_priors[None], flatten_bbox_preds, flatten_stride)
 
-        return flatten_cls_scores, flatten_decoded_bboxes
+        final_cls_scores = []
+        final_decoded_bboxes = []
+
+        for (bboxes, cls_scores) in zip(flatten_decoded_bboxes, flatten_cls_scores):
+            max_num = 300
+            
+            # cls_scores.shape = 8400, 80
+            scores, category_idxs = cls_scores.max(dim=1)
+            keep = torchvision.ops.batched_nms(bboxes, scores, category_idxs, iou_threshold=0.65)
+
+            keep_scores = cls_scores[keep][:max_num]
+            keep_boxes = bboxes[keep][:max_num]
+            keep_ids = category_idxs[keep][:max_num]
+
+            final_cls_scores.append(keep_scores)
+            final_decoded_bboxes.append(keep_boxes)
+
+        # TODO is there a better way to make these tensors flow? im a noob
+        final_cls_scores = torch.stack(final_cls_scores)
+        final_decoded_bboxes = torch.stack(final_decoded_bboxes)
+
+        return final_cls_scores, final_decoded_bboxes
+        #return flatten_cls_scores, flatten_decoded_bboxes
         #scores, labels, bboxes = [], [], []
+
+
 
         logits = []
         pred_boxes = []
